@@ -36,6 +36,7 @@ build/
 **/secrets/
 firebase-service-account*.json
 *serviceAccountKey*.json
+*firebase-adminsdk*.json
 .env
 .env.*
 application-secrets.properties
