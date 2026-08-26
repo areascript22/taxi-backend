@@ -22,7 +22,8 @@ public class DriverAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(DriverAdminService.class);
     private static final String DRIVERS_COLLECTION = "drivers";
-    private static final Set<String> VALID_ROLES = Set.of("admin", "driver");
+    private static final Set<String> VALID_ROLES = Set.of("superuser", "admin", "driver");
+    private static final String SUPER_ADMIN_UID = "AhsQJcGg49UQkLWiuy6trG0BWzq1";
 
     private final Firestore firestore;
     private final FirebaseAuth firebaseAuth;
@@ -103,10 +104,14 @@ public class DriverAdminService {
         if (!VALID_ROLES.contains(role)) {
             throw new InvalidRoleException(role);
         }
+        if (SUPER_ADMIN_UID.equals(uid)) {
+            throw new RoleHierarchyViolationException("No se puede cambiar el rol del super administrador fundador");
+        }
 
-        boolean isAdmin = "admin".equals(role);
+        boolean isSuperUser = "superuser".equals(role);
+        boolean isAdmin = isSuperUser || "admin".equals(role);
         try {
-            firebaseAuth.setCustomUserClaims(uid, Map.of("admin", isAdmin));
+            firebaseAuth.setCustomUserClaims(uid, Map.of("admin", isAdmin, "superuser", isSuperUser));
         } catch (FirebaseAuthException e) {
             if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
                 throw new DriverNotFoundException(uid);
