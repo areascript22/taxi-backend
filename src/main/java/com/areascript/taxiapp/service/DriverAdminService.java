@@ -5,6 +5,7 @@ import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.firebase.auth.AuthErrorCode;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
+import com.google.firebase.auth.UserRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -31,7 +32,29 @@ public class DriverAdminService {
         this.firebaseAuth = firebaseAuth;
     }
 
-    public void deleteDriver(String uid) {
+    public void deleteDriver(String uid, boolean callerIsSuperUser) {
+        UserRecord targetUser;
+        try {
+            targetUser = firebaseAuth.getUser(uid);
+        } catch (FirebaseAuthException e) {
+            if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
+                throw new DriverNotFoundException(uid);
+            }
+            log.error("DriverAdminDebug | Error al consultar uid={} antes de eliminar: {}", uid, e.getMessage(), e);
+            throw new DriverDeletionException("No se pudo verificar el usuario antes de eliminarlo", e);
+        }
+
+        Map<String, Object> targetClaims = targetUser.getCustomClaims();
+        boolean targetIsSuperUser = targetClaims != null && Boolean.TRUE.equals(targetClaims.get("superuser"));
+        boolean targetIsAdmin = targetClaims != null && Boolean.TRUE.equals(targetClaims.get("admin"));
+
+        if (targetIsSuperUser) {
+            throw new RoleHierarchyViolationException("No se puede eliminar a un superuser");
+        }
+        if (targetIsAdmin && !callerIsSuperUser) {
+            throw new RoleHierarchyViolationException("Un admin no puede eliminar a otro admin");
+        }
+
         try {
             firebaseAuth.deleteUser(uid);
         } catch (FirebaseAuthException e) {

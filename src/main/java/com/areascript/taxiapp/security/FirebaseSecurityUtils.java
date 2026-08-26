@@ -16,4 +16,9 @@ public final class FirebaseSecurityUtils {
         FirebaseToken token = getToken(request);
         return token != null && Boolean.TRUE.equals(token.getClaims().get("admin"));
     }
+
+    public static boolean isSuperUser(HttpServletRequest request) {
+        FirebaseToken token = getToken(request);
+        return token != null && Boolean.TRUE.equals(token.getClaims().get("superuser"));
+    }
 }

@@ -1,5 +1,4 @@
 package com.areascript.taxiapp.controller;
-
 import com.areascript.taxiapp.security.FirebaseSecurityUtils;
 import com.areascript.taxiapp.service.DriverAdminService;
 import com.areascript.taxiapp.service.DriverDeletionException;
@@ -7,6 +6,7 @@ import com.areascript.taxiapp.service.DriverListException;
 import com.areascript.taxiapp.service.DriverNotFoundException;
 import com.areascript.taxiapp.service.DriverRoleUpdateException;
 import com.areascript.taxiapp.service.InvalidRoleException;
+import com.areascript.taxiapp.service.RoleHierarchyViolationException;
 import com.google.firebase.auth.FirebaseToken;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
@@ -41,10 +41,12 @@ public class DriverAdminController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         try {
-            driverAdminService.deleteDriver(uid);
+            driverAdminService.deleteDriver(uid, FirebaseSecurityUtils.isSuperUser(request));
             return ResponseEntity.noContent().build();
         } catch (DriverNotFoundException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        } catch (RoleHierarchyViolationException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         } catch (DriverDeletionException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
@@ -68,7 +70,7 @@ public class DriverAdminController {
             @RequestBody UpdateDriverRoleRequest body,
             HttpServletRequest request
     ) {
-        if (!isSuperAdmin(request)) {
+        if (!isSuperAdmin(request) && !FirebaseSecurityUtils.isSuperUser(request)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
         try {
