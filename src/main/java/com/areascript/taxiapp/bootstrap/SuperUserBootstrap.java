@@ -16,7 +16,9 @@ import java.util.Map;
 // Se ejecuta en cada arranque del backend y garantiza que la cuenta dueña
 // del proyecto tenga el custom claim 'superuser' (y admin=true) en Firebase
 // Authentication, y el campo role='superuser' en su documento de Firestore.
-// Es idempotente: si el claim ya está asignado, no hace nada. Si el uid no
+// Es idempotente: si el claim ya está asignado, no lo vuelve a setear, pero
+// siempre re-sincroniza el campo 'role' en Firestore por si una corrida
+// anterior falló a mitad de camino. Si el uid no
 // existe en el proyecto de Firebase activo (ej. al correr con el profile
 // 'prod', que usa un proyecto de Firebase distinto al de dev), lo registra
 // como advertencia y deja que el arranque continúe con normalidad.
@@ -52,20 +54,27 @@ public class SuperUserBootstrap implements CommandLineRunner {
             return;
         }
 
-        if (Boolean.TRUE.equals(user.getCustomClaims().get("superuser"))) {
-            log.info("SuperUserBootstrapDebug | uid={} ya tiene el claim superuser, no se hace nada", SUPER_USER_UID);
-            return;
+        if (!Boolean.TRUE.equals(user.getCustomClaims().get("superuser"))) {
+            try {
+                firebaseAuth.setCustomUserClaims(SUPER_USER_UID, Map.of("admin", true, "superuser", true));
+                log.info("SuperUserBootstrapDebug | uid={} promovido a superuser correctamente", SUPER_USER_UID);
+            } catch (Exception e) {
+                log.error("SuperUserBootstrapDebug | Error al promover a superuser uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
+                return;
+            }
         }
 
+        // Siempre se sincroniza, incluso si el claim ya estaba asignado en una
+        // corrida anterior: si esa corrida falló después de setear el claim
+        // pero antes de escribir en Firestore, este merge es el que corrige
+        // el campo 'role' sin depender de reintentar el bloque de arriba.
         try {
-            firebaseAuth.setCustomUserClaims(SUPER_USER_UID, Map.of("admin", true, "superuser", true));
             firestore.collection(DRIVERS_COLLECTION)
                     .document(SUPER_USER_UID)
                     .set(Map.of("role", "superuser"), SetOptions.merge())
                     .get();
-            log.info("SuperUserBootstrapDebug | uid={} promovido a superuser correctamente", SUPER_USER_UID);
         } catch (Exception e) {
-            log.error("SuperUserBootstrapDebug | Error al promover a superuser uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
+            log.error("SuperUserBootstrapDebug | Error al sincronizar role=superuser en Firestore para uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
         }
     }
 }
