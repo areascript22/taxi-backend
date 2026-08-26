@@ -15,15 +15,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 @Configuration
 public class FirebaseConfig {
 
     private static final Logger log = LoggerFactory.getLogger(FirebaseConfig.class);
 
-    @Value("${firebase.credentials.path}")
+    @Value("${firebase.credentials.path:}")
     private String credentialsPath;
+
+    @Value("${FIREBASE_CREDENTIALS_JSON:}")
+    private String credentialsJson;
 
     @Bean
     public FirebaseApp firebaseApp() {
@@ -31,9 +36,9 @@ public class FirebaseConfig {
             return FirebaseApp.getInstance();
         }
         try {
-            Resource resource = new DefaultResourceLoader().getResource(credentialsPath);
-
-            try (InputStream credentialsStream = resource.getInputStream()) {
+            try (InputStream credentialsStream = credentialsJson.isBlank()
+                    ? new DefaultResourceLoader().getResource(credentialsPath).getInputStream()
+                    : new ByteArrayInputStream(credentialsJson.getBytes(StandardCharsets.UTF_8))) {
                 GoogleCredentials credentials = GoogleCredentials.fromStream(credentialsStream);
                 FirebaseOptions.Builder optionsBuilder = FirebaseOptions.builder().setCredentials(credentials);
                 if (credentials instanceof ServiceAccountCredentials serviceAccountCredentials) {
