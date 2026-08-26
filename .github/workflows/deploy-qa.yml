@@ -22,7 +22,7 @@ jobs:
           cache: 'maven'
 
       - name: Build with Maven
-        run: mvn clean package -DskipTests
+        run: mvn -B -ntp clean package -DskipTests
 
       - name: Deploy to Heroku
         env:
