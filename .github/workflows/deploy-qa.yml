@@ -3,7 +3,7 @@ name: Deploy QA to Heroku
 on:
   push:
     branches:
-      - QA
+      - qa
 
 jobs:
   deploy:
