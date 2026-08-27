@@ -1,5 +1,9 @@
 package com.areascript.taxiapp.service;
 
+import com.areascript.taxiapp.dto.DriverDTO;
+import com.areascript.taxiapp.dto.VehicleDTO;
+import com.google.cloud.Timestamp;
+import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.firebase.auth.AuthErrorCode;
@@ -11,7 +15,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -22,6 +25,7 @@ public class DriverAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(DriverAdminService.class);
     private static final String DRIVERS_COLLECTION = "drivers";
+    private static final String VEHICLES_COLLECTION = "vehicles";
     private static final Set<String> VALID_ROLES = Set.of("superuser", "admin", "driver");
     private static final String SUPER_ADMIN_UID = "AhsQJcGg49UQkLWiuy6trG0BWzq1";
 
@@ -80,14 +84,12 @@ public class DriverAdminService {
         log.info("DriverAdminDebug | Driver uid={} eliminado correctamente de Firebase Auth y de la colección '{}'", uid, DRIVERS_COLLECTION);
     }
 
-    public List<Map<String, Object>> listDrivers() {
+    public List<DriverDTO> listDrivers() {
         try {
             List<QueryDocumentSnapshot> documents = firestore.collection(DRIVERS_COLLECTION).get().get().getDocuments();
-            List<Map<String, Object>> drivers = new ArrayList<>();
+            List<DriverDTO> drivers = new ArrayList<>();
             for (QueryDocumentSnapshot document : documents) {
-                Map<String, Object> driver = new HashMap<>(document.getData());
-                driver.put("uid", document.getId());
-                drivers.add(driver);
+                drivers.add(toDriverDTO(document));
             }
             return drivers;
         } catch (InterruptedException e) {
@@ -98,6 +100,64 @@ public class DriverAdminService {
             log.error("DriverAdminDebug | Error al listar la colección '{}': {}", DRIVERS_COLLECTION, e.getMessage(), e);
             throw new DriverListException("No se pudo obtener la lista de drivers", e);
         }
+    }
+
+    private DriverDTO toDriverDTO(QueryDocumentSnapshot document) throws InterruptedException, ExecutionException {
+        Map<String, Object> data = document.getData();
+        String vehicleId = stringField(data, "vehicleId");
+        VehicleDTO vehicle = vehicleId.isBlank() ? null : fetchVehicle(vehicleId);
+
+        return new DriverDTO(
+                document.getId(),
+                stringField(data, "firstName"),
+                stringField(data, "lastName"),
+                stringField(data, "email"),
+                stringField(data, "phoneNumber"),
+                data.get("photoUrl") == null ? null : data.get("photoUrl").toString(),
+                stringField(data, "fcmToken"),
+                numberField(data, "rating", 5.0),
+                data.getOrDefault("role", "driver").toString(),
+                timestampField(data, "createdAt"),
+                timestampField(data, "updatedAt"),
+                vehicle
+        );
+    }
+
+    private VehicleDTO fetchVehicle(String vehicleId) throws InterruptedException, ExecutionException {
+        DocumentSnapshot snapshot = firestore.collection(VEHICLES_COLLECTION).document(vehicleId).get().get();
+        if (!snapshot.exists() || snapshot.getData() == null) {
+            return null;
+        }
+
+        Map<String, Object> data = snapshot.getData();
+        return new VehicleDTO(
+                snapshot.getId(),
+                stringField(data, "driverId"),
+                stringField(data, "plate"),
+                stringField(data, "brand"),
+                stringField(data, "model"),
+                (int) numberField(data, "year", 0),
+                stringField(data, "color"),
+                stringField(data, "registrationNumber"),
+                data.getOrDefault("verificationStatus", "pending").toString(),
+                timestampField(data, "createdAt"),
+                timestampField(data, "updatedAt")
+        );
+    }
+
+    private static String stringField(Map<String, Object> data, String key) {
+        Object value = data.get(key);
+        return value == null ? "" : value.toString();
+    }
+
+    private static double numberField(Map<String, Object> data, String key, double defaultValue) {
+        Object value = data.get(key);
+        return value instanceof Number number ? number.doubleValue() : defaultValue;
+    }
+
+    private static String timestampField(Map<String, Object> data, String key) {
+        Object value = data.get(key);
+        return value instanceof Timestamp timestamp ? timestamp.toDate().toInstant().toString() : null;
     }
 
     public void updateDriverRole(String uid, String role) {
