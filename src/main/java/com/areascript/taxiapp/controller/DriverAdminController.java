@@ -1,4 +1,5 @@
 package com.areascript.taxiapp.controller;
+import com.areascript.taxiapp.dto.DriverDTO;
 import com.areascript.taxiapp.security.FirebaseSecurityUtils;
 import com.areascript.taxiapp.service.DriverAdminService;
 import com.areascript.taxiapp.service.DriverDeletionException;
@@ -20,7 +21,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/drivers")
@@ -53,7 +53,7 @@ public class DriverAdminController {
     }
 
     @GetMapping
-    public ResponseEntity<List<Map<String, Object>>> listDrivers(HttpServletRequest request) {
+    public ResponseEntity<List<DriverDTO>> listDrivers(HttpServletRequest request) {
         if (!FirebaseSecurityUtils.isAdmin(request)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
