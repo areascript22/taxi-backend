@@ -20,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class RideService {
@@ -27,7 +28,22 @@ public class RideService {
     private static final Logger log = LoggerFactory.getLogger(RideService.class);
     private static final String TAXI_REQUESTS_PATH = "taxi_requests";
     private static final String PASSENGERS_COLLECTION = "passengers";
+    private static final String DRIVERS_COLLECTION = "drivers";
     private static final double EARTH_RADIUS_METERS = 6371000.0;
+
+    // Rutas de push registradas en cada app (ver PushNotificationsService):
+    // deben apuntar a una pantalla que no requiera un objeto `extra`, porque
+    // el payload de un push no puede llevar objetos Dart.
+    private static final String PASSENGER_PUSH_ROUTE = "/ride_tracking";
+    private static final String DRIVER_PUSH_ROUTE = "/booking";
+
+    // Margen para que ambas apps -que escuchan status vía onValue sobre este
+    // mismo nodo- alcancen a recibir y procesar el status "cancelled" (y
+    // driver_app/passenger_app puedan mostrar su diálogo) antes de que el
+    // nodo desaparezca. Solo entonces se limpia de Realtime Database.
+    private static final long CANCEL_CLEANUP_DELAY_SECONDS = 10;
+
+    private enum CancelAbortReason { FORBIDDEN, ALREADY_FINISHED }
 
     private final FirebaseDatabase firebaseDatabase;
     private final Firestore firestore;
@@ -59,7 +75,18 @@ public class RideService {
             @Override
             public Transaction.Result doTransaction(MutableData currentData) {
                 if (currentData.getValue() == null) {
-                    return Transaction.abort();
+                    // El Admin SDK puede invocar este handler con datos aún no
+                    // sincronizados en la primera pasada sobre una referencia
+                    // "fría" (recién creada, sin listener previo), devolviendo
+                    // null aunque el nodo sí exista en el servidor. Si
+                    // abortamos acá, cancelamos la transacción sin darle
+                    // chance al SDK de reintentar con el valor real. En vez de
+                    // eso, dejamos pasar sin modificar nada: si el nodo existe
+                    // de verdad, el hash no calzará con el servidor y el SDK
+                    // reintenta automáticamente este mismo callback con los
+                    // datos reales; si de verdad no existe, el commit no hará
+                    // ningún cambio y lo detectamos después de la transacción.
+                    return Transaction.success(currentData);
                 }
 
                 if (!"pending".equals(currentData.child("status").getValue())) {
@@ -114,39 +141,188 @@ public class RideService {
             throw new RideAcceptException("No se pudo aceptar la carrera", outcome.error().toException());
         }
 
-        if (!outcome.committed()) {
-            DataSnapshot snapshot = outcome.currentData();
-            if (snapshot == null || !snapshot.exists()) {
-                throw new RideNotFoundException(passengerId);
-            }
+        DataSnapshot snapshot = outcome.currentData();
+        if (snapshot == null || !snapshot.exists()) {
+            // Cubre tanto el caso real de "nunca existió" como el commit sin
+            // cambios que hacemos cuando doTransaction ve currentData nulo.
+            throw new RideNotFoundException(passengerId);
+        }
+
+        String finalStatus = (String) snapshot.child("status").getValue();
+        String assignedDriverId = (String) snapshot.child("driver").child("data").child("id").getValue();
+        boolean assignedToThisDriver = "driverAssigned".equals(finalStatus) && driverUid.equals(assignedDriverId);
+
+        if (!outcome.committed() || !assignedToThisDriver) {
             throw new RideAlreadyAssignedException(passengerId);
         }
 
         log.info("RideDebug | Carrera de passengerId={} aceptada por driverUid={}", passengerId, driverUid);
-        notifyPassenger(passengerId);
+        notifyByFcm(
+                PASSENGERS_COLLECTION,
+                passengerId,
+                new PushNotificationDTO(
+                        "¡Carrera aceptada!",
+                        "Un conductor va en camino a recogerte",
+                        PASSENGER_PUSH_ROUTE
+                )
+        );
     }
 
-    private void notifyPassenger(String passengerId) {
+    // Reemplaza los `.update({'status': 'cancelled', ...})` que antes hacían
+    // driver_app y passenger_app directo sobre Realtime Database: se mueve
+    // acá para (a) verificar con el token de Firebase que quien cancela es
+    // realmente el pasajero dueño de la carrera o el conductor ya asignado
+    // -no un tercero-, y (b) poder avisarle a la otra parte por push, algo
+    // que solo el backend puede hacer (el Admin SDK de FCM no está expuesto
+    // al cliente).
+    public void cancelRide(String passengerId, String callerUid) {
+        DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
+        CompletableFuture<RideTransactionOutcome> future = new CompletableFuture<>();
+        AtomicReference<CancelAbortReason> abortReason = new AtomicReference<>();
+
+        rideRef.runTransaction(new Transaction.Handler() {
+            @Override
+            public Transaction.Result doTransaction(MutableData currentData) {
+                if (currentData.getValue() == null) {
+                    // Mismo caso de referencia "fría" que en acceptRide: no
+                    // abortamos, dejamos que el SDK reintente con el valor
+                    // real si el nodo sí existe.
+                    return Transaction.success(currentData);
+                }
+
+                String status = (String) currentData.child("status").getValue();
+                if ("cancelled".equals(status) || "tripCompleted".equals(status)) {
+                    abortReason.set(CancelAbortReason.ALREADY_FINISHED);
+                    return Transaction.abort();
+                }
+
+                String assignedDriverId = (String) currentData.child("driver").child("data").child("id").getValue();
+                String cancelledBy;
+                if (callerUid.equals(passengerId)) {
+                    cancelledBy = "passenger";
+                } else if (callerUid.equals(assignedDriverId)) {
+                    cancelledBy = "driver";
+                } else {
+                    abortReason.set(CancelAbortReason.FORBIDDEN);
+                    return Transaction.abort();
+                }
+
+                currentData.child("status").setValue("cancelled");
+                currentData.child("cancelledBy").setValue(cancelledBy);
+                currentData.child("updatedAt").setValue(ServerValue.TIMESTAMP);
+                return Transaction.success(currentData);
+            }
+
+            @Override
+            public void onComplete(DatabaseError error, boolean committed, DataSnapshot currentData) {
+                future.complete(new RideTransactionOutcome(error, committed, currentData));
+            }
+        });
+
+        RideTransactionOutcome outcome;
         try {
-            DocumentSnapshot snapshot = firestore.collection(PASSENGERS_COLLECTION).document(passengerId).get().get();
+            outcome = future.get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("RideDebug | Interrumpido al cancelar la carrera de passengerId={}: {}", passengerId, e.getMessage(), e);
+            throw new RideCancelException("No se pudo cancelar la carrera", e);
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("RideDebug | Error al cancelar la carrera de passengerId={}: {}", passengerId, e.getMessage(), e);
+            throw new RideCancelException("No se pudo cancelar la carrera", e);
+        }
+
+        if (outcome.error() != null) {
+            log.error("RideDebug | Firebase rechazó la transacción de cancelación de passengerId={}: {}", passengerId, outcome.error().getMessage());
+            throw new RideCancelException("No se pudo cancelar la carrera", outcome.error().toException());
+        }
+
+        DataSnapshot snapshot = outcome.currentData();
+        if (snapshot == null || !snapshot.exists()) {
+            throw new RideNotFoundException(passengerId);
+        }
+
+        if (abortReason.get() == CancelAbortReason.FORBIDDEN) {
+            throw new RideCancelForbiddenException(passengerId);
+        }
+
+        String finalStatus = (String) snapshot.child("status").getValue();
+        if (!outcome.committed() || !"cancelled".equals(finalStatus)) {
+            throw new RideAlreadyFinishedException(passengerId);
+        }
+
+        String cancelledBy = (String) snapshot.child("cancelledBy").getValue();
+        log.info("RideDebug | Carrera de passengerId={} cancelada por callerUid={} (rol={})", passengerId, callerUid, cancelledBy);
+
+        if ("passenger".equals(cancelledBy)) {
+            String assignedDriverId = (String) snapshot.child("driver").child("data").child("id").getValue();
+            if (assignedDriverId != null) {
+                notifyByFcm(
+                        DRIVERS_COLLECTION,
+                        assignedDriverId,
+                        new PushNotificationDTO(
+                                "Carrera cancelada",
+                                "El pasajero canceló la carrera",
+                                DRIVER_PUSH_ROUTE
+                        )
+                );
+            }
+        } else {
+            notifyByFcm(
+                    PASSENGERS_COLLECTION,
+                    passengerId,
+                    new PushNotificationDTO(
+                            "Viaje cancelado",
+                            "Tu conductor canceló el viaje",
+                            PASSENGER_PUSH_ROUTE
+                    )
+            );
+        }
+
+        scheduleRideCleanup(rideRef, passengerId);
+    }
+
+    // Borra el nodo taxi_requests/{passengerId} unos segundos después de
+    // cancelarlo, una vez que ambos clientes ya tuvieron tiempo de recibir
+    // el status "cancelled" por su listener de Firebase. Corre en una
+    // transacción propia (no un removeValue directo) para no pisar una
+    // solicitud nueva que el pasajero pudiera haber creado en esa misma key
+    // mientras tanto: solo borra si el status sigue siendo "cancelled".
+    private void scheduleRideCleanup(DatabaseReference rideRef, String passengerId) {
+        CompletableFuture.runAsync(() -> rideRef.runTransaction(new Transaction.Handler() {
+            @Override
+            public Transaction.Result doTransaction(MutableData currentData) {
+                if (currentData.getValue() == null) {
+                    return Transaction.success(currentData);
+                }
+                if ("cancelled".equals(currentData.child("status").getValue())) {
+                    currentData.setValue(null);
+                }
+                return Transaction.success(currentData);
+            }
+
+            @Override
+            public void onComplete(DatabaseError error, boolean committed, DataSnapshot currentData) {
+                if (error != null) {
+                    log.error("RideDebug | No se pudo limpiar el nodo de passengerId={} tras cancelación: {}", passengerId, error.getMessage());
+                }
+            }
+        }), CompletableFuture.delayedExecutor(CANCEL_CLEANUP_DELAY_SECONDS, TimeUnit.SECONDS));
+    }
+
+    private void notifyByFcm(String collection, String documentId, PushNotificationDTO payload) {
+        try {
+            DocumentSnapshot snapshot = firestore.collection(collection).document(documentId).get().get();
             if (!snapshot.exists()) {
-                log.warn("RideDebug | No se encontró el documento de passengerId={} para notificarle", passengerId);
+                log.warn("RideDebug | No se encontró el documento {}/{} para notificarle", collection, documentId);
                 return;
             }
 
-            notificationService.sendPush(
-                    snapshot.getString("fcmToken"),
-                    new PushNotificationDTO(
-                            "¡Carrera aceptada!",
-                            "Un conductor va en camino a recogerte",
-                            "/ride_tracking"
-                    )
-            );
+            notificationService.sendPush(snapshot.getString("fcmToken"), payload);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("RideDebug | Interrumpido al notificar al passengerId={}: {}", passengerId, e.getMessage(), e);
+            log.error("RideDebug | Interrumpido al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
         } catch (ExecutionException e) {
-            log.error("RideDebug | Error al notificar al passengerId={} tras aceptar la carrera: {}", passengerId, e.getMessage(), e);
+            log.error("RideDebug | Error al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
         }
     }
 
