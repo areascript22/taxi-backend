@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -38,12 +39,14 @@ public class RideService {
     private static final String DRIVER_PUSH_ROUTE = "/booking";
 
     // Margen para que ambas apps -que escuchan status vía onValue sobre este
-    // mismo nodo- alcancen a recibir y procesar el status "cancelled" (y
-    // driver_app/passenger_app puedan mostrar su diálogo) antes de que el
-    // nodo desaparezca. Solo entonces se limpia de Realtime Database.
-    private static final long CANCEL_CLEANUP_DELAY_SECONDS = 10;
+    // mismo nodo- alcancen a recibir y procesar el status terminal (y
+    // driver_app/passenger_app puedan reaccionar: diálogo de cancelación o
+    // navegación al finalizar) antes de que el nodo desaparezca. Solo
+    // entonces se limpia de Realtime Database.
+    private static final long RIDE_CLEANUP_DELAY_SECONDS = 10;
+    private static final Set<String> TERMINAL_STATUSES = Set.of("cancelled", "tripCompleted");
 
-    private enum CancelAbortReason { FORBIDDEN, ALREADY_FINISHED }
+    private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
     private final FirebaseDatabase firebaseDatabase;
     private final Firestore firestore;
@@ -178,7 +181,7 @@ public class RideService {
     public void cancelRide(String passengerId, String callerUid) {
         DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
         CompletableFuture<RideTransactionOutcome> future = new CompletableFuture<>();
-        AtomicReference<CancelAbortReason> abortReason = new AtomicReference<>();
+        AtomicReference<OperationAbortReason> abortReason = new AtomicReference<>();
 
         rideRef.runTransaction(new Transaction.Handler() {
             @Override
@@ -191,8 +194,8 @@ public class RideService {
                 }
 
                 String status = (String) currentData.child("status").getValue();
-                if ("cancelled".equals(status) || "tripCompleted".equals(status)) {
-                    abortReason.set(CancelAbortReason.ALREADY_FINISHED);
+                if (TERMINAL_STATUSES.contains(status)) {
+                    abortReason.set(OperationAbortReason.NOT_ALLOWED);
                     return Transaction.abort();
                 }
 
@@ -203,7 +206,7 @@ public class RideService {
                 } else if (callerUid.equals(assignedDriverId)) {
                     cancelledBy = "driver";
                 } else {
-                    abortReason.set(CancelAbortReason.FORBIDDEN);
+                    abortReason.set(OperationAbortReason.FORBIDDEN);
                     return Transaction.abort();
                 }
 
@@ -241,8 +244,8 @@ public class RideService {
             throw new RideNotFoundException(passengerId);
         }
 
-        if (abortReason.get() == CancelAbortReason.FORBIDDEN) {
-            throw new RideCancelForbiddenException(passengerId);
+        if (abortReason.get() == OperationAbortReason.FORBIDDEN) {
+            throw new RideForbiddenException(passengerId);
         }
 
         String finalStatus = (String) snapshot.child("status").getValue();
@@ -281,12 +284,94 @@ public class RideService {
         scheduleRideCleanup(rideRef, passengerId);
     }
 
+    // Reemplaza el `.update({'status': 'tripCompleted', ...})` que antes
+    // hacía driver_app directo sobre Realtime Database: se mueve acá para
+    // verificar que quien finaliza es el conductor realmente asignado, y
+    // para poder reutilizar la misma limpieza programada del nodo que usa
+    // cancelRide (corre en el backend, así que no depende de que la app
+    // siga abierta el tiempo suficiente).
+    public void completeTrip(String passengerId, String driverUid) {
+        DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
+        CompletableFuture<RideTransactionOutcome> future = new CompletableFuture<>();
+        AtomicReference<OperationAbortReason> abortReason = new AtomicReference<>();
+
+        rideRef.runTransaction(new Transaction.Handler() {
+            @Override
+            public Transaction.Result doTransaction(MutableData currentData) {
+                if (currentData.getValue() == null) {
+                    return Transaction.success(currentData);
+                }
+
+                String status = (String) currentData.child("status").getValue();
+                // Solo se puede finalizar un viaje que el pasajero ya
+                // confirmó que arrancó (botón "He llegado" -> pasajero
+                // confirma "en camino" -> tripStarted). TripScreen solo
+                // muestra "Finalizar viaje" en ese status, pero igual se
+                // valida acá porque el cliente no es fuente de verdad.
+                if (!"tripStarted".equals(status)) {
+                    abortReason.set(OperationAbortReason.NOT_ALLOWED);
+                    return Transaction.abort();
+                }
+
+                String assignedDriverId = (String) currentData.child("driver").child("data").child("id").getValue();
+                if (!driverUid.equals(assignedDriverId)) {
+                    abortReason.set(OperationAbortReason.FORBIDDEN);
+                    return Transaction.abort();
+                }
+
+                currentData.child("status").setValue("tripCompleted");
+                currentData.child("updatedAt").setValue(ServerValue.TIMESTAMP);
+                return Transaction.success(currentData);
+            }
+
+            @Override
+            public void onComplete(DatabaseError error, boolean committed, DataSnapshot currentData) {
+                future.complete(new RideTransactionOutcome(error, committed, currentData));
+            }
+        });
+
+        RideTransactionOutcome outcome;
+        try {
+            outcome = future.get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("RideDebug | Interrumpido al finalizar el viaje de passengerId={}: {}", passengerId, e.getMessage(), e);
+            throw new RideCompleteException("No se pudo finalizar el viaje", e);
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("RideDebug | Error al finalizar el viaje de passengerId={}: {}", passengerId, e.getMessage(), e);
+            throw new RideCompleteException("No se pudo finalizar el viaje", e);
+        }
+
+        if (outcome.error() != null) {
+            log.error("RideDebug | Firebase rechazó la transacción de finalización de passengerId={}: {}", passengerId, outcome.error().getMessage());
+            throw new RideCompleteException("No se pudo finalizar el viaje", outcome.error().toException());
+        }
+
+        DataSnapshot snapshot = outcome.currentData();
+        if (snapshot == null || !snapshot.exists()) {
+            throw new RideNotFoundException(passengerId);
+        }
+
+        if (abortReason.get() == OperationAbortReason.FORBIDDEN) {
+            throw new RideForbiddenException(passengerId);
+        }
+
+        String finalStatus = (String) snapshot.child("status").getValue();
+        if (!outcome.committed() || !"tripCompleted".equals(finalStatus)) {
+            throw new RideAlreadyFinishedException(passengerId);
+        }
+
+        log.info("RideDebug | Viaje de passengerId={} finalizado por driverUid={}", passengerId, driverUid);
+        scheduleRideCleanup(rideRef, passengerId);
+    }
+
     // Borra el nodo taxi_requests/{passengerId} unos segundos después de
-    // cancelarlo, una vez que ambos clientes ya tuvieron tiempo de recibir
-    // el status "cancelled" por su listener de Firebase. Corre en una
-    // transacción propia (no un removeValue directo) para no pisar una
-    // solicitud nueva que el pasajero pudiera haber creado en esa misma key
-    // mientras tanto: solo borra si el status sigue siendo "cancelled".
+    // llegar a un status terminal (cancelado o finalizado), una vez que
+    // ambos clientes ya tuvieron tiempo de recibir ese status por su
+    // listener de Firebase. Corre en una transacción propia (no un
+    // removeValue directo) para no pisar una solicitud nueva que el
+    // pasajero pudiera haber creado en esa misma key mientras tanto: solo
+    // borra si el status sigue siendo terminal.
     private void scheduleRideCleanup(DatabaseReference rideRef, String passengerId) {
         CompletableFuture.runAsync(() -> rideRef.runTransaction(new Transaction.Handler() {
             @Override
@@ -294,7 +379,7 @@ public class RideService {
                 if (currentData.getValue() == null) {
                     return Transaction.success(currentData);
                 }
-                if ("cancelled".equals(currentData.child("status").getValue())) {
+                if (TERMINAL_STATUSES.contains(currentData.child("status").getValue())) {
                     currentData.setValue(null);
                 }
                 return Transaction.success(currentData);
@@ -303,10 +388,10 @@ public class RideService {
             @Override
             public void onComplete(DatabaseError error, boolean committed, DataSnapshot currentData) {
                 if (error != null) {
-                    log.error("RideDebug | No se pudo limpiar el nodo de passengerId={} tras cancelación: {}", passengerId, error.getMessage());
+                    log.error("RideDebug | No se pudo limpiar el nodo de passengerId={} tras finalizar/cancelar: {}", passengerId, error.getMessage());
                 }
             }
-        }), CompletableFuture.delayedExecutor(CANCEL_CLEANUP_DELAY_SECONDS, TimeUnit.SECONDS));
+        }), CompletableFuture.delayedExecutor(RIDE_CLEANUP_DELAY_SECONDS, TimeUnit.SECONDS));
     }
 
     private void notifyByFcm(String collection, String documentId, PushNotificationDTO payload) {
