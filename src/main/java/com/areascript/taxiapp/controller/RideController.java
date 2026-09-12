@@ -9,6 +9,7 @@ import com.areascript.taxiapp.service.RideCancelException;
 import com.areascript.taxiapp.service.RideCompleteException;
 import com.areascript.taxiapp.service.RideForbiddenException;
 import com.areascript.taxiapp.service.RideNotFoundException;
+import com.areascript.taxiapp.service.RideQueryException;
 import com.areascript.taxiapp.service.RideService;
 import com.google.firebase.auth.FirebaseToken;
 import jakarta.servlet.http.HttpServletRequest;
@@ -16,11 +17,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/rides")
@@ -119,6 +123,47 @@ public class RideController {
         } catch (RideAlreadyFinishedException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).build();
         } catch (RideCompleteException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    // Reemplaza la lectura directa que hacía passenger_app sobre su propio
+    // nodo de Realtime Database al reabrir la app, para decidir si debe
+    // resumir en RideTrackingScreen. El passengerId sale del token, nunca
+    // del cliente.
+    @GetMapping("/passenger/active")
+    public ResponseEntity<Map<String, Object>> getActivePassengerRide(HttpServletRequest request) {
+        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
+        if (token == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        try {
+            Map<String, Object> ride = rideService.findActiveRideForPassenger(token.getUid());
+            return ride == null
+                    ? ResponseEntity.noContent().build()
+                    : ResponseEntity.ok(ride);
+        } catch (RideQueryException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    // Reemplaza el escaneo completo de /taxi_requests que hacía driver_app
+    // client-side al reabrir la app, para decidir si debe resumir en
+    // TripScreen. El driverUid sale del token, nunca del cliente.
+    @GetMapping("/driver/active")
+    public ResponseEntity<Map<String, Object>> getActiveDriverRide(HttpServletRequest request) {
+        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
+        if (token == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        try {
+            Map<String, Object> ride = rideService.findActiveRideForDriver(token.getUid());
+            return ride == null
+                    ? ResponseEntity.noContent().build()
+                    : ResponseEntity.ok(ride);
+        } catch (RideQueryException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }

@@ -10,11 +10,13 @@ import com.google.firebase.database.FirebaseDatabase;
 import com.google.firebase.database.MutableData;
 import com.google.firebase.database.ServerValue;
 import com.google.firebase.database.Transaction;
+import com.google.firebase.database.ValueEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -45,6 +47,14 @@ public class RideService {
     // entonces se limpia de Realtime Database.
     private static final long RIDE_CLEANUP_DELAY_SECONDS = 10;
     private static final Set<String> TERMINAL_STATUSES = Set.of("cancelled", "tripCompleted");
+    // Statuses que cuentan como "viaje en curso" para findActiveRideForPassenger
+    // / findActiveRideForDriver -- 'pending' no aplica (todavía no tiene
+    // conductor asignado) y los TERMINAL_STATUSES ya terminaron. Debe
+    // mantenerse en sync con _activeRideStatuses (passenger_app) y
+    // _activeTripStatuses (driver_app), que hacían este mismo filtro
+    // client-side antes de que este chequeo se moviera acá.
+    private static final Set<String> ACTIVE_RIDE_STATUSES =
+            Set.of("driverAssigned", "driverArrived", "tripStarted");
 
     private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
@@ -392,6 +402,91 @@ public class RideService {
                 }
             }
         }), CompletableFuture.delayedExecutor(RIDE_CLEANUP_DELAY_SECONDS, TimeUnit.SECONDS));
+    }
+
+    // Reemplaza la lectura directa que hacía passenger_app sobre su propio
+    // nodo taxi_requests/{passengerId}: mismo resultado, pero ahora la
+    // identidad de "de quién es este viaje" sale del token verificado (el
+    // caller solo puede consultar su propio uid) en vez de que el cliente
+    // pase el id que quiera.
+    public Map<String, Object> findActiveRideForPassenger(String passengerId) {
+        DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
+        DataSnapshot snapshot = readSnapshot(rideRef);
+        if (snapshot == null || !snapshot.exists()) {
+            return null;
+        }
+
+        String status = (String) snapshot.child("status").getValue();
+        if (!ACTIVE_RIDE_STATUSES.contains(status)) {
+            return null;
+        }
+
+        return asMap(snapshot);
+    }
+
+    // Reemplaza el escaneo completo de /taxi_requests que hacía driver_app
+    // client-side (TripRepositoryImpl.findActiveTripForDriver): ese approach
+    // descargaba al dispositivo del conductor la data de TODAS las
+    // solicitudes activas (incluyendo pickup/nombre de pasajeros ajenos a
+    // él) solo para filtrar localmente la suya. Acá el filtrado ocurre
+    // server-side con el Admin SDK y solo se devuelve el viaje que
+    // realmente le pertenece al conductor autenticado.
+    public Map<String, Object> findActiveRideForDriver(String driverUid) {
+        DatabaseReference requestsRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH);
+        DataSnapshot snapshot = readSnapshot(requestsRef);
+        if (snapshot == null || !snapshot.exists()) {
+            return null;
+        }
+
+        for (DataSnapshot child : snapshot.getChildren()) {
+            String status = (String) child.child("status").getValue();
+            if (!ACTIVE_RIDE_STATUSES.contains(status)) {
+                continue;
+            }
+
+            String assignedDriverId = (String) child.child("driver").child("data").child("id").getValue();
+            if (driverUid.equals(assignedDriverId)) {
+                return asMap(child);
+            }
+        }
+
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(DataSnapshot snapshot) {
+        Object value = snapshot.getValue();
+        return value instanceof Map ? new LinkedHashMap<>((Map<String, Object>) value) : new LinkedHashMap<>();
+    }
+
+    // Lectura puntual (no transacción, no listener persistente) de un nodo de
+    // Realtime Database. El Admin SDK Java no tiene un `.get()` bloqueante
+    // como el SDK cliente -- se envuelve el listener de una sola vez en un
+    // CompletableFuture con el mismo timeout usado en las transacciones de
+    // este service.
+    private DataSnapshot readSnapshot(DatabaseReference ref) {
+        CompletableFuture<DataSnapshot> future = new CompletableFuture<>();
+
+        ref.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                future.complete(snapshot);
+            }
+
+            @Override
+            public void onCancelled(DatabaseError error) {
+                future.completeExceptionally(error.toException());
+            }
+        });
+
+        try {
+            return future.get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RideQueryException("No se pudo consultar el viaje activo", e);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new RideQueryException("No se pudo consultar el viaje activo", e);
+        }
     }
 
     private void notifyByFcm(String collection, String documentId, PushNotificationDTO payload) {
