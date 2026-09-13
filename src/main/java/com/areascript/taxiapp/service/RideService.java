@@ -47,14 +47,21 @@ public class RideService {
     // entonces se limpia de Realtime Database.
     private static final long RIDE_CLEANUP_DELAY_SECONDS = 10;
     private static final Set<String> TERMINAL_STATUSES = Set.of("cancelled", "tripCompleted");
-    // Statuses que cuentan como "viaje en curso" para findActiveRideForPassenger
-    // / findActiveRideForDriver -- 'pending' no aplica (todavía no tiene
-    // conductor asignado) y los TERMINAL_STATUSES ya terminaron. Debe
-    // mantenerse en sync con _activeRideStatuses (passenger_app) y
-    // _activeTripStatuses (driver_app), que hacían este mismo filtro
-    // client-side antes de que este chequeo se moviera acá.
+    // Statuses que cuentan como "viaje en curso" para findActiveRideForDriver
+    // -- 'pending' no aplica del lado del conductor (todavía no hay ninguno
+    // asignado, nada que resumir) y los TERMINAL_STATUSES ya terminaron. Debe
+    // mantenerse en sync con _activeTripStatuses (driver_app), que hacía este
+    // mismo filtro client-side antes de que este chequeo se moviera acá.
     private static final Set<String> ACTIVE_RIDE_STATUSES =
             Set.of("driverAssigned", "driverArrived", "tripStarted");
+    // Igual que ACTIVE_RIDE_STATUSES pero para findActiveRideForPassenger:
+    // acá 'pending' sí cuenta como "viaje en curso" -- si el pasajero cierra
+    // la app mientras todavía no hay conductor asignado, al reabrir debe
+    // poder resumir el diálogo "Buscando conductor" en vez de perder la
+    // solicitud (que sigue viva en Realtime Database y cualquier conductor
+    // podría aceptar mientras tanto).
+    private static final Set<String> PASSENGER_ACTIVE_STATUSES =
+            Set.of("pending", "driverAssigned", "driverArrived", "tripStarted");
 
     private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
@@ -417,7 +424,7 @@ public class RideService {
         }
 
         String status = (String) snapshot.child("status").getValue();
-        if (!ACTIVE_RIDE_STATUSES.contains(status)) {
+        if (!PASSENGER_ACTIVE_STATUSES.contains(status)) {
             return null;
         }
 
