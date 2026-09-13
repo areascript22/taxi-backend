@@ -13,8 +13,10 @@ import com.google.firebase.database.Transaction;
 import com.google.firebase.database.ValueEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -62,17 +64,167 @@ public class RideService {
     // podría aceptar mientras tanto).
     private static final Set<String> PASSENGER_ACTIVE_STATUSES =
             Set.of("pending", "driverAssigned", "driverArrived", "tripStarted");
+    // Margen que le damos al cliente para cancelar por su cuenta (el
+    // WaitingForDriverDialog de passenger_app usa 30s) antes de que el
+    // backend intervenga -- cubre el caso de que el pasajero cierre la app y
+    // nunca la vuelva a abrir, donde de otra forma la solicitud quedaría
+    // 'pending' en Realtime Database para siempre. Se agenda en requestRide
+    // y se ejecuta en expireIfStillPending.
+    private static final long PENDING_REQUEST_EXPIRY_SECONDS = 35;
 
     private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
     private final FirebaseDatabase firebaseDatabase;
     private final Firestore firestore;
     private final NotificationService notificationService;
+    private final TaskScheduler taskScheduler;
 
-    public RideService(FirebaseDatabase firebaseDatabase, Firestore firestore, NotificationService notificationService) {
+    public RideService(
+            FirebaseDatabase firebaseDatabase,
+            Firestore firestore,
+            NotificationService notificationService,
+            TaskScheduler taskScheduler
+    ) {
         this.firebaseDatabase = firebaseDatabase;
         this.firestore = firestore;
         this.notificationService = notificationService;
+        this.taskScheduler = taskScheduler;
+    }
+
+    // Reemplaza el .set() que antes hacía passenger_app directo sobre
+    // Realtime Database: se mueve acá para poder agendar la auto-cancelación
+    // (expireIfStillPending) justo donde se crea la solicitud, y para que el
+    // nombre/foto del pasajero salgan del token verificado en vez de confiar
+    // en lo que mande el cliente (mismo criterio que acceptRide con los
+    // datos del conductor).
+    public void requestRide(
+            String passengerId,
+            String passengerDisplayName,
+            String passengerPhotoUrl,
+            double pickupLatitude,
+            double pickupLongitude,
+            String pickupAddress
+    ) {
+        DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
+
+        Map<String, Object> pickupLocation = new HashMap<>();
+        pickupLocation.put("latitude", pickupLatitude);
+        pickupLocation.put("longitude", pickupLongitude);
+        pickupLocation.put("address", pickupAddress);
+
+        Map<String, Object> passenger = new HashMap<>();
+        passenger.put("name", passengerDisplayName);
+        passenger.put("profileImage", passengerPhotoUrl);
+
+        // rideId mantiene el mismo formato que generaba antes el cliente
+        // (passenger_app) -- driver_app lo sigue usando como key de
+        // dedup/identificación en su lista de solicitudes entrantes
+        // (IncomingRequestEntity.rideId).
+        Map<String, Object> rideData = new HashMap<>();
+        rideData.put("rideId", passengerId + "_" + System.currentTimeMillis());
+        rideData.put("userId", passengerId);
+        rideData.put("passenger", passenger);
+        rideData.put("pickupLocation", pickupLocation);
+        rideData.put("status", "pending");
+        rideData.put("createdAt", ServerValue.TIMESTAMP);
+        rideData.put("updatedAt", ServerValue.TIMESTAMP);
+
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        rideRef.setValue(rideData, (error, ref) -> {
+            if (error != null) {
+                future.completeExceptionally(error.toException());
+            } else {
+                future.complete(null);
+            }
+        });
+
+        try {
+            future.get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("RideDebug | Interrumpido al crear la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
+            throw new RideRequestException("No se pudo crear la solicitud", e);
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("RideDebug | Error al crear la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
+            throw new RideRequestException("No se pudo crear la solicitud", e);
+        }
+
+        log.info("RideDebug | Solicitud creada para passengerId={}", passengerId);
+
+        taskScheduler.schedule(
+                () -> expireIfStillPending(passengerId),
+                Instant.now().plusSeconds(PENDING_REQUEST_EXPIRY_SECONDS)
+        );
+    }
+
+    // Tarea agendada desde requestRide: si pasado PENDING_REQUEST_EXPIRY_SECONDS
+    // la solicitud sigue 'pending' (nadie la aceptó y el pasajero tampoco la
+    // canceló por su cuenta), el backend la cancela automáticamente -- red de
+    // seguridad para cuando el pasajero cierra la app y nunca la reabre, caso
+    // en el que ni su propio timeout local ni ninguna otra acción del cliente
+    // van a limpiar la solicitud. Usa la misma transacción check-then-mutate
+    // que acceptRide/cancelRide para no pisar a un conductor que la acepte
+    // justo en este instante.
+    private void expireIfStillPending(String passengerId) {
+        DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
+        CompletableFuture<RideTransactionOutcome> future = new CompletableFuture<>();
+
+        rideRef.runTransaction(new Transaction.Handler() {
+            @Override
+            public Transaction.Result doTransaction(MutableData currentData) {
+                if (currentData.getValue() == null) {
+                    return Transaction.success(currentData);
+                }
+
+                if (!"pending".equals(currentData.child("status").getValue())) {
+                    // Ya la aceptó un conductor, o el pasajero ya la canceló
+                    // por su cuenta -- nada que hacer.
+                    return Transaction.abort();
+                }
+
+                currentData.child("status").setValue("cancelled");
+                currentData.child("cancelledBy").setValue("system");
+                currentData.child("updatedAt").setValue(ServerValue.TIMESTAMP);
+                return Transaction.success(currentData);
+            }
+
+            @Override
+            public void onComplete(DatabaseError error, boolean committed, DataSnapshot currentData) {
+                future.complete(new RideTransactionOutcome(error, committed, currentData));
+            }
+        });
+
+        RideTransactionOutcome outcome;
+        try {
+            outcome = future.get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("RideDebug | Interrumpido al auto-cancelar la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
+            return;
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("RideDebug | Error al auto-cancelar la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
+            return;
+        }
+
+        if (outcome.error() != null) {
+            log.error("RideDebug | Firebase rechazó la auto-cancelación de passengerId={}: {}", passengerId, outcome.error().getMessage());
+            return;
+        }
+
+        DataSnapshot snapshot = outcome.currentData();
+        boolean actuallyExpired = outcome.committed()
+                && snapshot != null
+                && snapshot.exists()
+                && "cancelled".equals(snapshot.child("status").getValue());
+
+        if (!actuallyExpired) {
+            // No hizo falta: ya tenía conductor asignado, ya la habían
+            // cancelado, o el nodo ya no existía. No es un error.
+            return;
+        }
+
+        log.info("RideDebug | Solicitud de passengerId={} auto-cancelada tras {}s sin conductor", passengerId, PENDING_REQUEST_EXPIRY_SECONDS);
+        scheduleRideCleanup(rideRef, passengerId);
     }
 
     // Reemplaza la transacción que antes corría en el driver_app directo
@@ -257,8 +409,19 @@ public class RideService {
         }
 
         DataSnapshot snapshot = outcome.currentData();
+
+        // Cancelar es idempotente por intención: si la solicitud ya no
+        // existe (el backend ya la limpió tras auto-expirarla, o tras una
+        // cancelación previa) o si ya está en status "cancelled" (el backend
+        // la auto-canceló por timeout, o llegó una segunda llamada a este
+        // mismo endpoint casi al mismo tiempo), el estado deseado -que la
+        // carrera no siga activa- ya se cumplió. Tratamos ambos casos como
+        // éxito en vez de error, para que el cliente no reciba un falso
+        // failure cuando en realidad ganó la carrera contra
+        // expireIfStillPending (ver PENDING_REQUEST_EXPIRY_SECONDS).
         if (snapshot == null || !snapshot.exists()) {
-            throw new RideNotFoundException(passengerId);
+            log.info("RideDebug | cancelRide de passengerId={} no encontró la solicitud (ya limpiada) -- se toma como éxito idempotente", passengerId);
+            return;
         }
 
         if (abortReason.get() == OperationAbortReason.FORBIDDEN) {
@@ -267,6 +430,13 @@ public class RideService {
 
         String finalStatus = (String) snapshot.child("status").getValue();
         if (!outcome.committed() || !"cancelled".equals(finalStatus)) {
+            if ("cancelled".equals(finalStatus)) {
+                log.info("RideDebug | cancelRide de passengerId={} encontró la solicitud ya cancelada -- se toma como éxito idempotente", passengerId);
+                return;
+            }
+            // Cualquier otro status ya-terminal (ej. tripCompleted) sí es un
+            // conflicto real: no tiene sentido "cancelar" un viaje que ya se
+            // completó.
             throw new RideAlreadyFinishedException(passengerId);
         }
 

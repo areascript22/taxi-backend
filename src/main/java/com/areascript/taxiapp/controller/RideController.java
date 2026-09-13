@@ -1,6 +1,7 @@
 package com.areascript.taxiapp.controller;
 
 import com.areascript.taxiapp.dto.AcceptRideRequest;
+import com.areascript.taxiapp.dto.RequestRideRequest;
 import com.areascript.taxiapp.security.FirebaseSecurityUtils;
 import com.areascript.taxiapp.service.RideAcceptException;
 import com.areascript.taxiapp.service.RideAlreadyAssignedException;
@@ -10,6 +11,7 @@ import com.areascript.taxiapp.service.RideCompleteException;
 import com.areascript.taxiapp.service.RideForbiddenException;
 import com.areascript.taxiapp.service.RideNotFoundException;
 import com.areascript.taxiapp.service.RideQueryException;
+import com.areascript.taxiapp.service.RideRequestException;
 import com.areascript.taxiapp.service.RideService;
 import com.google.firebase.auth.FirebaseToken;
 import jakarta.servlet.http.HttpServletRequest;
@@ -37,6 +39,35 @@ public class RideController {
     }
 
     private static final Logger log = LoggerFactory.getLogger(RideController.class);
+
+    // Reemplaza el .set() directo que hacía passenger_app sobre Realtime
+    // Database al pedir un taxi: pasa por el backend para poder agendar la
+    // auto-cancelación (RideService.expireIfStillPending) y para que el
+    // nombre/foto del pasajero salgan del token verificado, no del cliente.
+    @PostMapping("/request")
+    public ResponseEntity<Void> requestRide(
+            @RequestBody RequestRideRequest body,
+            HttpServletRequest request
+    ) {
+        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
+        if (token == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        try {
+            rideService.requestRide(
+                    token.getUid(),
+                    token.getName(),
+                    token.getPicture(),
+                    body.latitude(),
+                    body.longitude(),
+                    body.address()
+            );
+            return ResponseEntity.noContent().build();
+        } catch (RideRequestException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
 
     @PostMapping("/{passengerId}/accept")
     public ResponseEntity<Void> acceptRide(
