@@ -1,6 +1,7 @@
 package com.areascript.taxiapp.service;
 
 import com.areascript.taxiapp.dto.PushNotificationDTO;
+import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.firebase.database.DataSnapshot;
@@ -71,6 +72,14 @@ public class RideService {
     // 'pending' en Realtime Database para siempre. Se agenda en requestRide
     // y se ejecuta en expireIfStillPending.
     private static final long PENDING_REQUEST_EXPIRY_SECONDS = 35;
+
+    // Chat entre pasajero y conductor durante un viaje activo (ver
+    // firebase/firestore.rules para el modelo de datos completo y por qué
+    // se usa rideId -- no passengerId -- como clave del hilo).
+    private static final String CHATS_COLLECTION = "chats";
+    private static final String MESSAGES_SUBCOLLECTION = "messages";
+    private static final int CHAT_MESSAGE_MAX_LENGTH = 1000;
+    private static final long CHAT_RETENTION_DAYS = 7;
 
     private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
@@ -329,15 +338,41 @@ public class RideService {
         }
 
         log.info("RideDebug | Carrera de passengerId={} aceptada por driverUid={}", passengerId, driverUid);
+        String rideId = (String) snapshot.child("rideId").getValue();
         notifyByFcm(
                 PASSENGERS_COLLECTION,
                 passengerId,
                 new PushNotificationDTO(
                         "¡Carrera aceptada!",
                         "Un conductor va en camino a recogerte",
-                        PASSENGER_PUSH_ROUTE
+                        PASSENGER_PUSH_ROUTE,
+                        null,
+                        null
                 )
         );
+
+        createChatThread(rideId, passengerId, driverUid);
+    }
+
+    // Habilita el chat de esta carrera: crea el doc padre que
+    // firestore.rules usa para autorizar a los 2 participantes a leer
+    // chats/{rideId}/messages/**. No relanza si falla -- igual que un push
+    // que falla, no debe revertir una carrera ya aceptada; en el peor caso
+    // el chat queda no disponible para esa carrera puntual.
+    private void createChatThread(String rideId, String passengerId, String driverUid) {
+        Map<String, Object> chatData = new HashMap<>();
+        chatData.put("passengerId", passengerId);
+        chatData.put("driverId", driverUid);
+        chatData.put("createdAt", Timestamp.now());
+
+        try {
+            firestore.collection(CHATS_COLLECTION).document(rideId).set(chatData).get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("ChatDebug | Interrumpido al crear el hilo de chat de rideId={}: {}", rideId, e.getMessage(), e);
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("ChatDebug | Error al crear el hilo de chat de rideId={}: {}", rideId, e.getMessage(), e);
+        }
     }
 
     // Reemplaza los `.update({'status': 'cancelled', ...})` que antes hacían
@@ -452,7 +487,9 @@ public class RideService {
                         new PushNotificationDTO(
                                 "Carrera cancelada",
                                 "El pasajero canceló la carrera",
-                                DRIVER_PUSH_ROUTE
+                                DRIVER_PUSH_ROUTE,
+                                null,
+                                null
                         )
                 );
             }
@@ -463,7 +500,9 @@ public class RideService {
                     new PushNotificationDTO(
                             "Viaje cancelado",
                             "Tu conductor canceló el viaje",
-                            PASSENGER_PUSH_ROUTE
+                            PASSENGER_PUSH_ROUTE,
+                            null,
+                            null
                     )
             );
         }
@@ -579,6 +618,94 @@ public class RideService {
                 }
             }
         }), CompletableFuture.delayedExecutor(RIDE_CLEANUP_DELAY_SECONDS, TimeUnit.SECONDS));
+    }
+
+    // Escribe un mensaje de chat y avisa por push al otro participante.
+    // Deriva el rol (driver/passenger) del propio token verificado, igual
+    // que cancelRide -- el cliente nunca dice quién es, solo manda el texto.
+    // El rideId lo resuelve el backend desde el nodo de Realtime Database
+    // (fuente de verdad), nunca confía en un rideId que mande el cliente.
+    public void sendChatMessage(String passengerId, String senderUid, String text) {
+        DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
+        DataSnapshot snapshot = readSnapshot(rideRef);
+        if (snapshot == null || !snapshot.exists()) {
+            throw new RideNotFoundException(passengerId);
+        }
+
+        String status = (String) snapshot.child("status").getValue();
+        if (!ACTIVE_RIDE_STATUSES.contains(status)) {
+            // 'pending' (sin conductor asignado todavía) también cae acá:
+            // el chat solo tiene sentido una vez que hay alguien del otro
+            // lado para leerlo.
+            throw new RideAlreadyFinishedException(passengerId);
+        }
+
+        String assignedDriverId = (String) snapshot.child("driver").child("data").child("id").getValue();
+        String senderRole;
+        String recipientCollection;
+        String recipientUid;
+        if (senderUid.equals(passengerId)) {
+            senderRole = "passenger";
+            recipientCollection = DRIVERS_COLLECTION;
+            recipientUid = assignedDriverId;
+        } else if (senderUid.equals(assignedDriverId)) {
+            senderRole = "driver";
+            recipientCollection = PASSENGERS_COLLECTION;
+            recipientUid = passengerId;
+        } else {
+            throw new RideForbiddenException(passengerId);
+        }
+
+        // El controller ya rechazó con 400 un texto null/blank antes de
+        // llamar acá -- lo único que queda por sanear es el largo máximo.
+        String trimmedText = text.trim();
+        if (trimmedText.length() > CHAT_MESSAGE_MAX_LENGTH) {
+            trimmedText = trimmedText.substring(0, CHAT_MESSAGE_MAX_LENGTH);
+        }
+
+        String rideId = (String) snapshot.child("rideId").getValue();
+        Timestamp now = Timestamp.now();
+        Timestamp expireAt = Timestamp.ofTimeSecondsAndNanos(
+                now.getSeconds() + CHAT_RETENTION_DAYS * 24 * 60 * 60,
+                now.getNanos()
+        );
+
+        Map<String, Object> messageData = new HashMap<>();
+        messageData.put("senderId", senderUid);
+        messageData.put("senderRole", senderRole);
+        messageData.put("text", trimmedText);
+        messageData.put("createdAt", now);
+        messageData.put("expireAt", expireAt);
+
+        try {
+            firestore.collection(CHATS_COLLECTION)
+                    .document(rideId)
+                    .collection(MESSAGES_SUBCOLLECTION)
+                    .add(messageData)
+                    .get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("ChatDebug | Interrumpido al enviar mensaje en rideId={}: {}", rideId, e.getMessage(), e);
+            throw new ChatMessageException("No se pudo enviar el mensaje", e);
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("ChatDebug | Error al enviar mensaje en rideId={}: {}", rideId, e.getMessage(), e);
+            throw new ChatMessageException("No se pudo enviar el mensaje", e);
+        }
+
+        log.info("ChatDebug | Mensaje enviado en rideId={} por senderRole={}", rideId, senderRole);
+
+        String preview = trimmedText.length() > 80 ? trimmedText.substring(0, 80) + "…" : trimmedText;
+        notifyByFcm(
+                recipientCollection,
+                recipientUid,
+                new PushNotificationDTO(
+                        "driver".equals(senderRole) ? "Tu conductor te escribió" : "Tu pasajero te escribió",
+                        preview,
+                        "driver".equals(senderRole) ? PASSENGER_PUSH_ROUTE : DRIVER_PUSH_ROUTE,
+                        "chat_message",
+                        rideId
+                )
+        );
     }
 
     // Reemplaza la lectura directa que hacía passenger_app sobre su propio
