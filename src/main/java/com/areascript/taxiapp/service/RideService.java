@@ -27,6 +27,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 @Service
 public class RideService {
@@ -72,6 +73,18 @@ public class RideService {
     // 'pending' en Realtime Database para siempre. Se agenda en requestRide
     // y se ejecuta en expireIfStillPending.
     private static final long PENDING_REQUEST_EXPIRY_SECONDS = 35;
+
+    // Defensa de última línea contra Plus Codes (Open Location Code, ej.
+    // "GX7Q+2X Choluteca, Honduras") en pickupAddress: passenger_app ya
+    // filtra esto en el origen (GeocodingResultParser), pero este endpoint
+    // no puede asumir que todo cliente que lo llame (versión vieja de la
+    // app, un futuro panel admin, etc.) lo haga. Si un Plus Code igual llega
+    // acá, se despoja antes de persistir -- driver_app ya trata
+    // pickupLocation.address vacío como "Nueva carrera" en vez de leerlo.
+    private static final Pattern PLUS_CODE_PREFIX = Pattern.compile(
+            "^[23456789CFGHJMPQRVWX]{4,8}\\+[23456789CFGHJMPQRVWX]{2,3}[,\\s]*",
+            Pattern.CASE_INSENSITIVE
+    );
 
     // Chat entre pasajero y conductor durante un viaje activo (ver
     // firebase/firestore.rules para el modelo de datos completo y por qué
@@ -119,7 +132,7 @@ public class RideService {
         Map<String, Object> pickupLocation = new HashMap<>();
         pickupLocation.put("latitude", pickupLatitude);
         pickupLocation.put("longitude", pickupLongitude);
-        pickupLocation.put("address", pickupAddress);
+        pickupLocation.put("address", sanitizeAddress(pickupAddress));
 
         Map<String, Object> passenger = new HashMap<>();
         passenger.put("name", passengerDisplayName);
@@ -812,6 +825,13 @@ public class RideService {
 
     private static Double asDouble(Object value) {
         return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private static String sanitizeAddress(String rawAddress) {
+        if (rawAddress == null) {
+            return "";
+        }
+        return PLUS_CODE_PREFIX.matcher(rawAddress.trim()).replaceFirst("").trim();
     }
 
     private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
