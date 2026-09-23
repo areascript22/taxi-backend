@@ -2,7 +2,9 @@ package com.areascript.taxiapp.controller;
 
 import com.areascript.taxiapp.dto.AcceptRideRequest;
 import com.areascript.taxiapp.dto.RequestRideRequest;
+import com.areascript.taxiapp.dto.SendChatMessageRequest;
 import com.areascript.taxiapp.security.FirebaseSecurityUtils;
+import com.areascript.taxiapp.service.ChatMessageException;
 import com.areascript.taxiapp.service.RideAcceptException;
 import com.areascript.taxiapp.service.RideAlreadyAssignedException;
 import com.areascript.taxiapp.service.RideAlreadyFinishedException;
@@ -154,6 +156,38 @@ public class RideController {
         } catch (RideAlreadyFinishedException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).build();
         } catch (RideCompleteException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    // Mensajería de chat entre pasajero y conductor durante un viaje activo.
+    // Mismo criterio que cancelRide/completeTrip: el rol de quien escribe
+    // (driver/passenger) se deriva del uid del token verificado, nunca del
+    // cliente, y el push a la otra parte lo dispara el backend.
+    @PostMapping("/{passengerId}/messages")
+    public ResponseEntity<Void> sendChatMessage(
+            @PathVariable String passengerId,
+            @RequestBody SendChatMessageRequest body,
+            HttpServletRequest request
+    ) {
+        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
+        if (token == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (body.text() == null || body.text().isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+
+        try {
+            rideService.sendChatMessage(passengerId, token.getUid(), body.text());
+            return ResponseEntity.noContent().build();
+        } catch (RideNotFoundException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        } catch (RideForbiddenException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        } catch (RideAlreadyFinishedException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        } catch (ChatMessageException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }

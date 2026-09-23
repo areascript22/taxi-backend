@@ -53,6 +53,10 @@ public class NotificationService {
                 .putData("title", payload.title())
                 .putData("subtitle", payload.subtitle())
                 .putData("route", payload.route())
+                // FCM exige valores no nulos en putData -- type/rideId son
+                // los únicos campos opcionales del payload (ver PushNotificationDTO).
+                .putData("type", payload.type() != null ? payload.type() : "")
+                .putData("rideId", payload.rideId() != null ? payload.rideId() : "")
                 // Prioridad alta + canal/prioridad de la notificación en
                 // alto: sin esto, Android puede mostrar el push en modo
                 // "silencioso" (solo en la bandeja) en vez de heads-up,
