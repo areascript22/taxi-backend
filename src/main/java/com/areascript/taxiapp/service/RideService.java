@@ -27,6 +27,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 @Service
 public class RideService {
@@ -35,6 +36,7 @@ public class RideService {
     private static final String TAXI_REQUESTS_PATH = "taxi_requests";
     private static final String PASSENGERS_COLLECTION = "passengers";
     private static final String DRIVERS_COLLECTION = "drivers";
+    private static final String VEHICLES_COLLECTION = "vehicles";
     private static final double EARTH_RADIUS_METERS = 6371000.0;
 
     // Rutas de push registradas en cada app (ver PushNotificationsService):
@@ -72,6 +74,18 @@ public class RideService {
     // 'pending' en Realtime Database para siempre. Se agenda en requestRide
     // y se ejecuta en expireIfStillPending.
     private static final long PENDING_REQUEST_EXPIRY_SECONDS = 35;
+
+    // Defensa de última línea contra Plus Codes (Open Location Code, ej.
+    // "GX7Q+2X Choluteca, Honduras") en pickupAddress: passenger_app ya
+    // filtra esto en el origen (GeocodingResultParser), pero este endpoint
+    // no puede asumir que todo cliente que lo llame (versión vieja de la
+    // app, un futuro panel admin, etc.) lo haga. Si un Plus Code igual llega
+    // acá, se despoja antes de persistir -- driver_app ya trata
+    // pickupLocation.address vacío como "Nueva carrera" en vez de leerlo.
+    private static final Pattern PLUS_CODE_PREFIX = Pattern.compile(
+            "^[23456789CFGHJMPQRVWX]{4,8}\\+[23456789CFGHJMPQRVWX]{2,3}[,\\s]*",
+            Pattern.CASE_INSENSITIVE
+    );
 
     // Chat entre pasajero y conductor durante un viaje activo (ver
     // firebase/firestore.rules para el modelo de datos completo y por qué
@@ -119,7 +133,7 @@ public class RideService {
         Map<String, Object> pickupLocation = new HashMap<>();
         pickupLocation.put("latitude", pickupLatitude);
         pickupLocation.put("longitude", pickupLongitude);
-        pickupLocation.put("address", pickupAddress);
+        pickupLocation.put("address", sanitizeAddress(pickupAddress));
 
         Map<String, Object> passenger = new HashMap<>();
         passenger.put("name", passengerDisplayName);
@@ -236,6 +250,59 @@ public class RideService {
         scheduleRideCleanup(rideRef, passengerId);
     }
 
+    // Teléfono y datos del vehículo no vienen en el token de Firebase (solo
+    // uid/email/name/picture), así que se buscan en Firestore antes de
+    // asignar al conductor. Es información complementaria para el pasajero:
+    // si Firestore falla o el conductor todavía no cargó su vehículo, se
+    // continúa la asignación igual con esos campos en null.
+    private record DriverVehicleInfo(
+            String phoneNumber,
+            String vehiclePlate,
+            String vehicleBrand,
+            String vehicleModel,
+            String vehicleColor
+    ) {
+        private static final DriverVehicleInfo EMPTY =
+                new DriverVehicleInfo(null, null, null, null, null);
+    }
+
+    private DriverVehicleInfo fetchDriverVehicleInfo(String driverUid) {
+        try {
+            DocumentSnapshot driverSnapshot =
+                    firestore.collection(DRIVERS_COLLECTION).document(driverUid).get().get(15, TimeUnit.SECONDS);
+            if (!driverSnapshot.exists() || driverSnapshot.getData() == null) {
+                return DriverVehicleInfo.EMPTY;
+            }
+
+            String phoneNumber = driverSnapshot.getString("phoneNumber");
+            String vehicleId = driverSnapshot.getString("vehicleId");
+            if (vehicleId == null || vehicleId.isBlank()) {
+                return new DriverVehicleInfo(phoneNumber, null, null, null, null);
+            }
+
+            DocumentSnapshot vehicleSnapshot =
+                    firestore.collection(VEHICLES_COLLECTION).document(vehicleId).get().get(15, TimeUnit.SECONDS);
+            if (!vehicleSnapshot.exists() || vehicleSnapshot.getData() == null) {
+                return new DriverVehicleInfo(phoneNumber, null, null, null, null);
+            }
+
+            return new DriverVehicleInfo(
+                    phoneNumber,
+                    vehicleSnapshot.getString("plate"),
+                    vehicleSnapshot.getString("brand"),
+                    vehicleSnapshot.getString("model"),
+                    vehicleSnapshot.getString("color")
+            );
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("RideDebug | Interrumpido al buscar teléfono/vehículo de driverUid={}: {}", driverUid, e.getMessage());
+            return DriverVehicleInfo.EMPTY;
+        } catch (ExecutionException | TimeoutException e) {
+            log.warn("RideDebug | No se pudo buscar teléfono/vehículo de driverUid={}: {}", driverUid, e.getMessage());
+            return DriverVehicleInfo.EMPTY;
+        }
+    }
+
     // Reemplaza la transacción que antes corría en el driver_app directo
     // sobre Realtime Database: mueve la asignación atómica del driver acá
     // para que, si dos conductores presionan "aceptar" al mismo tiempo, solo
@@ -251,6 +318,7 @@ public class RideService {
     ) {
         DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
         CompletableFuture<RideTransactionOutcome> future = new CompletableFuture<>();
+        DriverVehicleInfo vehicleInfo = fetchDriverVehicleInfo(driverUid);
 
         rideRef.runTransaction(new Transaction.Handler() {
             @Override
@@ -282,6 +350,11 @@ public class RideService {
                 driverData.put("email", driverEmail);
                 driverData.put("displayName", driverDisplayName);
                 driverData.put("photoUrl", driverPhotoUrl);
+                driverData.put("phoneNumber", vehicleInfo.phoneNumber());
+                driverData.put("vehiclePlate", vehicleInfo.vehiclePlate());
+                driverData.put("vehicleBrand", vehicleInfo.vehicleBrand());
+                driverData.put("vehicleModel", vehicleInfo.vehicleModel());
+                driverData.put("vehicleColor", vehicleInfo.vehicleColor());
                 currentData.child("driver").child("data").setValue(driverData);
 
                 Map<String, Object> location = new HashMap<>();
@@ -812,6 +885,13 @@ public class RideService {
 
     private static Double asDouble(Object value) {
         return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private static String sanitizeAddress(String rawAddress) {
+        if (rawAddress == null) {
+            return "";
+        }
+        return PLUS_CODE_PREFIX.matcher(rawAddress.trim()).replaceFirst("").trim();
     }
 
     private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
