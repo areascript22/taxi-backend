@@ -10,6 +10,12 @@ public record DriverDTO(
         String fcmToken,
         double rating,
         String role,
+        String approvalStatus,
+        boolean isBlocked,
+        String blockReason,
+        String blockedAt,
+        String blockedBy,
+        String rejectionReason,
         String createdAt,
         String updatedAt,
         VehicleDTO vehicle
