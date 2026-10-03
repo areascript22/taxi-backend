@@ -46,6 +46,15 @@
 			<artifactId>firebase-admin</artifactId>
 			<version>9.4.3</version>
 		</dependency>
+
+		<!-- Requerida por com.google.firebase.cloud.StorageClient (Admin SDK)
+		     para poder borrar objetos de Firebase Storage: no viene incluida
+		     transitivamente por firebase-admin. -->
+		<dependency>
+			<groupId>com.google.cloud</groupId>
+			<artifactId>google-cloud-storage</artifactId>
+			<version>2.47.0</version>
+		</dependency>
 	</dependencies>
 
 	<build>

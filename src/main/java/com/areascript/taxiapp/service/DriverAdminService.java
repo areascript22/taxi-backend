@@ -37,10 +37,12 @@ public class DriverAdminService {
 
     private final Firestore firestore;
     private final FirebaseAuth firebaseAuth;
+    private final AccountCleanupService accountCleanupService;
 
-    public DriverAdminService(Firestore firestore, FirebaseAuth firebaseAuth) {
+    public DriverAdminService(Firestore firestore, FirebaseAuth firebaseAuth, AccountCleanupService accountCleanupService) {
         this.firestore = firestore;
         this.firebaseAuth = firebaseAuth;
+        this.accountCleanupService = accountCleanupService;
     }
 
     public void deleteDriver(String uid, boolean callerIsSuperUser) {
@@ -76,18 +78,13 @@ public class DriverAdminService {
             throw new DriverDeletionException("No se pudo eliminar el usuario de Firebase Authentication", e);
         }
 
-        try {
-            firestore.collection(DRIVERS_COLLECTION).document(uid).delete().get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("DriverAdminDebug | Interrumpido al eliminar el documento uid={} de '{}': {}", uid, DRIVERS_COLLECTION, e.getMessage(), e);
-            throw new DriverDeletionException("El usuario se eliminó de Authentication pero falló al eliminar el documento en Firestore", e);
-        } catch (ExecutionException e) {
-            log.error("DriverAdminDebug | Error al eliminar el documento uid={} de '{}': {}", uid, DRIVERS_COLLECTION, e.getMessage(), e);
-            throw new DriverDeletionException("El usuario se eliminó de Authentication pero falló al eliminar el documento en Firestore", e);
-        }
+        // Limpieza completa (doc de drivers, vehículo asociado, foto en
+        // Storage y chats) -- antes de esto solo se borraba el doc de
+        // Firestore, dejando vehículo/foto/chats huérfanos. Compartido con la
+        // autoeliminación de cuenta (ver AccountService.deleteOwnAccount).
+        accountCleanupService.wipeUserData(uid);
 
-        log.info("DriverAdminDebug | Driver uid={} eliminado correctamente de Firebase Auth y de la colección '{}'", uid, DRIVERS_COLLECTION);
+        log.info("DriverAdminDebug | Driver uid={} eliminado correctamente de Firebase Auth y limpiado por completo", uid);
     }
 
     // Fetch completo, sin paginar -- usado por el buscador del panel admin

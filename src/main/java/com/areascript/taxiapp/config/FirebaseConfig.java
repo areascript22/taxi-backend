@@ -39,6 +39,15 @@ public class FirebaseConfig {
     @Value("${firebase.database.url:}")
     private String databaseUrl;
 
+    // Nombre del bucket de Storage (ej. "taxigo-dev-96d02.firebasestorage.app",
+    // con o sin el prefijo "gs://" -- se admite cualquiera de las dos formas,
+    // ver storageBucketName()). Opcional igual que databaseUrl: en entornos
+    // donde todavía no existe el bucket (ej. prod al momento de escribir esto),
+    // se deja vacío y AccountCleanupService simplemente omite el borrado de
+    // fotos en Storage con un warning, sin tumbar el resto del borrado.
+    @Value("${firebase.storage.bucket:}")
+    private String storageBucket;
+
     @Bean
     public FirebaseApp firebaseApp() {
         if (!FirebaseApp.getApps().isEmpty()) {
@@ -55,6 +64,9 @@ public class FirebaseConfig {
                 }
                 if (!databaseUrl.isBlank()) {
                     optionsBuilder.setDatabaseUrl(databaseUrl);
+                }
+                if (!storageBucket.isBlank()) {
+                    optionsBuilder.setStorageBucket(storageBucketName());
                 }
                 FirebaseApp app = FirebaseApp.initializeApp(optionsBuilder.build());
                 log.info("Firebase Admin inicializado correctamente. Proyecto: {}", app.getOptions().getProjectId());
@@ -84,5 +96,14 @@ public class FirebaseConfig {
     @Bean
     public FirebaseMessaging firebaseMessaging(FirebaseApp firebaseApp) {
         return FirebaseMessaging.getInstance(firebaseApp);
+    }
+
+    // Admite tanto "taxigo-dev-96d02.firebasestorage.app" como
+    // "gs://taxigo-dev-96d02.firebasestorage.app" (el prefijo "gs://" es la
+    // forma en que Firebase Console lo muestra, pero FirebaseOptions.setStorageBucket
+    // espera el nombre sin prefijo).
+    private String storageBucketName() {
+        String trimmed = storageBucket.trim();
+        return trimmed.startsWith("gs://") ? trimmed.substring("gs://".length()) : trimmed;
     }
 }
