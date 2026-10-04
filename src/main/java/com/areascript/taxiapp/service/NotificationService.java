@@ -12,7 +12,11 @@ import com.google.firebase.messaging.Message;
 import com.google.firebase.messaging.Notification;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.MessageSource;
+import org.springframework.context.NoSuchMessageException;
 import org.springframework.stereotype.Service;
+
+import java.util.Locale;
 
 @Service
 public class NotificationService {
@@ -29,29 +33,56 @@ public class NotificationService {
     // aunque el canal sea de importancia alta.
     private static final String ANDROID_CHANNEL_ID = "high_importance_channel";
 
-    private final FirebaseMessaging firebaseMessaging;
+    // Idioma del push cuando el destinatario no tiene `language` guardado
+    // (documento creado antes de que existiera el campo, o usuario que nunca
+    // llegó a autenticarse después del cambio). Coincide con el bundle por
+    // defecto, messages.properties.
+    private static final Locale DEFAULT_LOCALE = Locale.forLanguageTag("es");
 
-    public NotificationService(FirebaseMessaging firebaseMessaging) {
+    private final FirebaseMessaging firebaseMessaging;
+    private final MessageSource messageSource;
+
+    public NotificationService(FirebaseMessaging firebaseMessaging, MessageSource messageSource) {
         this.firebaseMessaging = firebaseMessaging;
+        this.messageSource = messageSource;
     }
 
+    // `language` es el del DESTINATARIO ('es'/'en', como lo guardan las apps
+    // junto al fcmToken), no el de quien disparó la acción. Null/vacío ->
+    // DEFAULT_LOCALE.
+    //
     // No relanza: un push que falla no debe tumbar el flujo que lo dispara
     // (ej. una carrera ya aceptada no debe revertirse porque la notificación
     // no llegó). Solo se registra el error.
-    public void sendPush(String token, PushNotificationDTO payload) {
+    public void sendPush(String token, String language, PushNotificationDTO payload) {
         if (token == null || token.isBlank()) {
-            log.warn("NotificationDebug | Se omitió el envío del push '{}': token vacío", payload.title());
+            log.warn("NotificationDebug | Se omitió el envío del push '{}': token vacío", payload.titleKey());
+            return;
+        }
+
+        String title;
+        String body;
+        try {
+            Locale locale = resolveLocale(language);
+            title = messageSource.getMessage(payload.titleKey(), null, locale);
+            body = payload.bodyKey() != null
+                    ? messageSource.getMessage(payload.bodyKey(), null, locale)
+                    : payload.bodyText();
+        } catch (NoSuchMessageException e) {
+            // Key sin traducir: es un bug nuestro, no del usuario. Se omite el
+            // push en vez de propagar -- mismo criterio que el catch de abajo.
+            log.error("NotificationDebug | Falta la key del push en el catálogo: {}", e.getMessage(), e);
             return;
         }
 
         Message message = Message.builder()
                 .setToken(token)
                 .setNotification(Notification.builder()
-                        .setTitle(payload.title())
-                        .setBody(payload.subtitle())
+                        .setTitle(title)
+                        .setBody(body)
                         .build())
-                .putData("title", payload.title())
-                .putData("subtitle", payload.subtitle())
+                .putData("title", title)
+                .putData("subtitle", body)
                 .putData("route", payload.route())
                 // FCM exige valores no nulos en putData -- type/rideId son
                 // los únicos campos opcionales del payload (ver PushNotificationDTO).
@@ -76,8 +107,8 @@ public class NotificationService {
                         .putHeader("apns-priority", "10")
                         .setAps(Aps.builder()
                                 .setAlert(ApsAlert.builder()
-                                        .setTitle(payload.title())
-                                        .setBody(payload.subtitle())
+                                        .setTitle(title)
+                                        .setBody(body)
                                         .build())
                                 .setSound("default")
                                 .build())
@@ -87,7 +118,18 @@ public class NotificationService {
         try {
             firebaseMessaging.send(message);
         } catch (FirebaseMessagingException e) {
-            log.error("NotificationDebug | Error al enviar push '{}' a token={}: {}", payload.title(), token, e.getMessage(), e);
+            log.error("NotificationDebug | Error al enviar push '{}' a token={}: {}", payload.titleKey(), token, e.getMessage(), e);
         }
+    }
+
+    // Un idioma que no tenga bundle propio (o uno inválido, que
+    // forLanguageTag devuelve como Locale vacío) termina igual en
+    // messages.properties gracias a fallback-to-system-locale=false; este
+    // chequeo solo evita el paso por MessageSource con un tag vacío.
+    private static Locale resolveLocale(String language) {
+        if (language == null || language.isBlank()) {
+            return DEFAULT_LOCALE;
+        }
+        return Locale.forLanguageTag(language);
     }
 }

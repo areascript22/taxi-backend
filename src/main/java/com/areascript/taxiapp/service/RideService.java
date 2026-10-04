@@ -415,12 +415,10 @@ public class RideService {
         notifyByFcm(
                 PASSENGERS_COLLECTION,
                 passengerId,
-                new PushNotificationDTO(
-                        "¡Carrera aceptada!",
-                        "Un conductor va en camino a recogerte",
-                        PASSENGER_PUSH_ROUTE,
-                        null,
-                        null
+                PushNotificationDTO.translated(
+                        "push.ride.accepted.title",
+                        "push.ride.accepted.body",
+                        PASSENGER_PUSH_ROUTE
                 )
         );
 
@@ -557,12 +555,10 @@ public class RideService {
                 notifyByFcm(
                         DRIVERS_COLLECTION,
                         assignedDriverId,
-                        new PushNotificationDTO(
-                                "Carrera cancelada",
-                                "El pasajero canceló la carrera",
-                                DRIVER_PUSH_ROUTE,
-                                null,
-                                null
+                        PushNotificationDTO.translated(
+                                "push.ride.cancelledByPassenger.title",
+                                "push.ride.cancelledByPassenger.body",
+                                DRIVER_PUSH_ROUTE
                         )
                 );
             }
@@ -570,12 +566,10 @@ public class RideService {
             notifyByFcm(
                     PASSENGERS_COLLECTION,
                     passengerId,
-                    new PushNotificationDTO(
-                            "Viaje cancelado",
-                            "Tu conductor canceló el viaje",
-                            PASSENGER_PUSH_ROUTE,
-                            null,
-                            null
+                    PushNotificationDTO.translated(
+                            "push.ride.cancelledByDriver.title",
+                            "push.ride.cancelledByDriver.body",
+                            PASSENGER_PUSH_ROUTE
                     )
             );
         }
@@ -771,8 +765,8 @@ public class RideService {
         notifyByFcm(
                 recipientCollection,
                 recipientUid,
-                new PushNotificationDTO(
-                        "driver".equals(senderRole) ? "Tu conductor te escribió" : "Tu pasajero te escribió",
+                PushNotificationDTO.withUserText(
+                        "driver".equals(senderRole) ? "push.chat.fromDriver.title" : "push.chat.fromPassenger.title",
                         preview,
                         "driver".equals(senderRole) ? PASSENGER_PUSH_ROUTE : DRIVER_PUSH_ROUTE,
                         "chat_message",
@@ -874,7 +868,15 @@ public class RideService {
                 return;
             }
 
-            notificationService.sendPush(snapshot.getString("fcmToken"), payload);
+            // El idioma sale del mismo snapshot que el token: es el del
+            // destinatario, que es justo lo que no se puede deducir del
+            // request (quien dispara la acción casi nunca es quien recibe el
+            // push). Las apps lo escriben junto al fcmToken.
+            notificationService.sendPush(
+                    snapshot.getString("fcmToken"),
+                    snapshot.getString("language"),
+                    payload
+            );
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
