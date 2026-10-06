@@ -63,7 +63,8 @@ public class RideController {
                     token.getPicture(),
                     body.latitude(),
                     body.longitude(),
-                    body.address()
+                    body.address(),
+                    body.sector()
             );
             return ResponseEntity.noContent().build();
         } catch (RideRequestException e) {

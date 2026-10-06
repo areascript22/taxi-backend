@@ -75,6 +75,11 @@ public class RideService {
     // y se ejecuta en expireIfStillPending.
     private static final long PENDING_REQUEST_EXPIRY_SECONDS = 35;
 
+    // Largo máximo del sector que se persiste. El más largo del .geojson actual
+    // ("Sector tanques de agua la saboya") tiene 32 caracteres, así que 80 deja
+    // margen de sobra para nombres nuevos sin permitir un texto arbitrario.
+    private static final int MAX_SECTOR_LENGTH = 80;
+
     // Defensa de última línea contra Plus Codes (Open Location Code, ej.
     // "GX7Q+2X Choluteca, Honduras") en pickupAddress: passenger_app ya
     // filtra esto en el origen (GeocodingResultParser), pero este endpoint
@@ -126,7 +131,8 @@ public class RideService {
             String passengerPhotoUrl,
             double pickupLatitude,
             double pickupLongitude,
-            String pickupAddress
+            String pickupAddress,
+            String pickupSector
     ) {
         DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
 
@@ -134,6 +140,11 @@ public class RideService {
         pickupLocation.put("latitude", pickupLatitude);
         pickupLocation.put("longitude", pickupLongitude);
         pickupLocation.put("address", sanitizeAddress(pickupAddress));
+        // El sector lo resuelve passenger_app contra sus polígonos; acá solo se
+        // sanea. No se recalcula en el servidor a propósito: el .geojson viviría
+        // duplicado en dos repos y se desincronizaría al primer ajuste de un
+        // polígono.
+        pickupLocation.put("sector", sanitizeSector(pickupSector));
 
         Map<String, Object> passenger = new HashMap<>();
         passenger.put("name", passengerDisplayName);
@@ -887,6 +898,27 @@ public class RideService {
 
     private static Double asDouble(Object value) {
         return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    // El sector lo va a PRONUNCIAR el TTS de driver_app, así que los espacios
+    // sucios importan: el .geojson trae nombres como "Tierra nueva " o "Comil "
+    // con espacio no separable al final. passenger_app ya los normaliza, pero
+    // este endpoint no puede asumir que todo cliente lo haga.
+    //
+    // El tope de largo es defensa contra un cliente que mande un texto absurdo
+    // en este campo: lo que se lee en voz alta tiene que ser un nombre de zona,
+    // no un párrafo.
+    // Package-private (no private) para poder testearlo directo: instanciar
+    // RideService exige FirebaseDatabase y Firestore reales.
+    static String sanitizeSector(String rawSector) {
+        if (rawSector == null) {
+            return "";
+        }
+
+        String collapsed = rawSector.replaceAll("[\\s\\u00A0]+", " ").trim();
+        return collapsed.length() > MAX_SECTOR_LENGTH
+                ? collapsed.substring(0, MAX_SECTOR_LENGTH).trim()
+                : collapsed;
     }
 
     private static String sanitizeAddress(String rawAddress) {
