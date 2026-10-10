@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.service;
+package com.areascript.taxiapp.notification.application;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.ResourceBundleMessageSource;

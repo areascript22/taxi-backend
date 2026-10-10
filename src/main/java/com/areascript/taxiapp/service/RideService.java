@@ -6,7 +6,8 @@ import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.error.ForbiddenException;
 import com.areascript.taxiapp.common.error.NotFoundException;
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
-import com.areascript.taxiapp.dto.PushNotificationDTO;
+import com.areascript.taxiapp.notification.application.PushNotificationService;
+import com.areascript.taxiapp.notification.domain.PushMessage;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
@@ -106,7 +107,7 @@ public class RideService {
 
     private final FirebaseDatabase firebaseDatabase;
     private final Firestore firestore;
-    private final NotificationService notificationService;
+    private final PushNotificationService pushNotificationService;
     private final TaskScheduler taskScheduler;
     private final TaxiappProperties.Rides rideSettings;
     private final TaxiappProperties.Chat chatSettings;
@@ -115,14 +116,14 @@ public class RideService {
     public RideService(
             FirebaseDatabase firebaseDatabase,
             Firestore firestore,
-            NotificationService notificationService,
+            PushNotificationService pushNotificationService,
             TaskScheduler taskScheduler,
             TaxiappProperties properties,
             FirebaseProperties firebaseProperties
     ) {
         this.firebaseDatabase = firebaseDatabase;
         this.firestore = firestore;
-        this.notificationService = notificationService;
+        this.pushNotificationService = pushNotificationService;
         this.taskScheduler = taskScheduler;
         this.rideSettings = properties.rides();
         this.chatSettings = properties.chat();
@@ -476,7 +477,7 @@ public class RideService {
         notifyByFcm(
                 PASSENGERS_COLLECTION,
                 passengerId,
-                PushNotificationDTO.translated(
+                PushMessage.translated(
                         "push.ride.accepted.title",
                         "push.ride.accepted.body",
                         PASSENGER_PUSH_ROUTE
@@ -616,7 +617,7 @@ public class RideService {
                 notifyByFcm(
                         DRIVERS_COLLECTION,
                         assignedDriverId,
-                        PushNotificationDTO.translated(
+                        PushMessage.translated(
                                 "push.ride.cancelledByPassenger.title",
                                 "push.ride.cancelledByPassenger.body",
                                 DRIVER_PUSH_ROUTE
@@ -627,7 +628,7 @@ public class RideService {
             notifyByFcm(
                     PASSENGERS_COLLECTION,
                     passengerId,
-                    PushNotificationDTO.translated(
+                    PushMessage.translated(
                             "push.ride.cancelledByDriver.title",
                             "push.ride.cancelledByDriver.body",
                             PASSENGER_PUSH_ROUTE
@@ -826,7 +827,7 @@ public class RideService {
         notifyByFcm(
                 recipientCollection,
                 recipientUid,
-                PushNotificationDTO.withUserText(
+                PushMessage.withUserText(
                         "driver".equals(senderRole) ? "push.chat.fromDriver.title" : "push.chat.fromPassenger.title",
                         preview,
                         "driver".equals(senderRole) ? PASSENGER_PUSH_ROUTE : DRIVER_PUSH_ROUTE,
@@ -921,9 +922,10 @@ public class RideService {
         }
     }
 
-    private void notifyByFcm(String collection, String documentId, PushNotificationDTO payload) {
+    private void notifyByFcm(String collection, String documentId, PushMessage payload) {
         try {
-            DocumentSnapshot snapshot = firestore.collection(collection).document(documentId).get().get();
+            DocumentSnapshot snapshot = firestore.collection(collection).document(documentId).get()
+                    .get(timeoutMillis, TimeUnit.MILLISECONDS);
             if (!snapshot.exists()) {
                 log.warn("RideDebug | No se encontró el documento {}/{} para notificarle", collection, documentId);
                 return;
@@ -933,7 +935,7 @@ public class RideService {
             // destinatario, que es justo lo que no se puede deducir del
             // request (quien dispara la acción casi nunca es quien recibe el
             // push). Las apps lo escriben junto al fcmToken.
-            notificationService.sendPush(
+            pushNotificationService.send(
                     snapshot.getString("fcmToken"),
                     snapshot.getString("language"),
                     payload
@@ -941,7 +943,7 @@ public class RideService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
-        } catch (ExecutionException e) {
+        } catch (ExecutionException | TimeoutException e) {
             log.error("RideDebug | Error al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
         }
     }

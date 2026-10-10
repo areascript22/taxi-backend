@@ -41,7 +41,7 @@ import static org.mockito.Mockito.when;
 // Objetivo: congelar el comportamiento HTTP ACTUAL de los endpoints antes de
 // mover código. Por eso solo se simula el borde con el mundo exterior
 // (Firebase y el scheduler) y se levanta el resto del servidor real: filtro de
-// seguridad, controllers, services y NotificationService con su catálogo de
+// seguridad, controllers, services y PushNotificationService con su catálogo de
 // mensajes. Los tests hablan HTTP y verifican datos en las bases simuladas,
 // así que no dependen de cómo estén organizadas las clases por dentro y
 // deben seguir pasando, sin cambios, durante todo el refactor.

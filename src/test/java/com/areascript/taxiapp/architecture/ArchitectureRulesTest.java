@@ -53,6 +53,16 @@ class ArchitectureRulesTest {
         rule.check(classes);
     }
 
+    // La inversión de dependencias: domain y application declaran lo que
+    // necesitan (interfaces) y infra lo implementa. Nunca al revés.
+    @Test
+    void domain_y_application_no_dependen_de_infra() {
+        ArchRule rule = noClasses().that().resideInAnyPackage("..domain..", "..application..")
+                .should().dependOnClassesThat().resideInAPackage("..infra..")
+                .allowEmptyShould(true);
+        rule.check(classes);
+    }
+
     // Los controllers llegan a la infraestructura solo a través de los casos de uso.
     @Test
     void la_api_no_depende_de_la_infraestructura() {
