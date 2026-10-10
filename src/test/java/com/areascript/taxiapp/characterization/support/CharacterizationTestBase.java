@@ -52,10 +52,18 @@ import static org.mockito.Mockito.when;
 //
 // Ningún test toca Firebase real: todas las piezas de Firebase son mocks y
 // los CommandLineRunner (bootstrap de superuser, backfill) están anulados.
-@SpringBootTest
+//
+// El fundador se fija acá con valores de prueba: así los tests no dependen de
+// lo que haya en secrets/taxiapp-secrets.properties de cada máquina.
+@SpringBootTest(properties = {
+        "taxiapp.admin.founder-uid=" + CharacterizationTestBase.FOUNDER_UID,
+        "taxiapp.admin.founder-email=" + CharacterizationTestBase.FOUNDER_EMAIL
+})
 public abstract class CharacterizationTestBase {
 
     protected static final String RIDES = "taxi_requests";
+    protected static final String FOUNDER_UID = "founder-uid";
+    protected static final String FOUNDER_EMAIL = "founder@test.com";
 
     @MockitoBean
     private FirebaseApp firebaseApp;

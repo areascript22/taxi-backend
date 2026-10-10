@@ -1,5 +1,11 @@
 package com.areascript.taxiapp.service;
 
+import com.areascript.taxiapp.common.config.TaxiappProperties;
+import com.areascript.taxiapp.common.error.ConflictException;
+import com.areascript.taxiapp.common.error.ExternalServiceException;
+import com.areascript.taxiapp.common.error.ForbiddenException;
+import com.areascript.taxiapp.common.error.NotFoundException;
+import com.areascript.taxiapp.common.firebase.FirebaseProperties;
 import com.areascript.taxiapp.dto.PushNotificationDTO;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentSnapshot;
@@ -45,12 +51,11 @@ public class RideService {
     private static final String PASSENGER_PUSH_ROUTE = "/ride_tracking";
     private static final String DRIVER_PUSH_ROUTE = "/booking";
 
-    // Margen para que ambas apps -que escuchan status vía onValue sobre este
-    // mismo nodo- alcancen a recibir y procesar el status terminal (y
-    // driver_app/passenger_app puedan reaccionar: diálogo de cancelación o
-    // navegación al finalizar) antes de que el nodo desaparezca. Solo
-    // entonces se limpia de Realtime Database.
-    private static final long RIDE_CLEANUP_DELAY_SECONDS = 10;
+    // Tras un status terminal, el nodo se borra pasado
+    // taxiapp.rides.terminal-cleanup-delay: margen para que ambas apps -que
+    // escuchan status vía onValue sobre este mismo nodo- alcancen a recibir y
+    // procesar el status terminal (diálogo de cancelación o navegación al
+    // finalizar) antes de que el nodo desaparezca.
     private static final Set<String> TERMINAL_STATUSES = Set.of("cancelled", "tripCompleted");
     // Statuses que cuentan como "viaje en curso" para findActiveRideForDriver
     // -- 'pending' no aplica del lado del conductor (todavía no hay ninguno
@@ -67,13 +72,12 @@ public class RideService {
     // podría aceptar mientras tanto).
     private static final Set<String> PASSENGER_ACTIVE_STATUSES =
             Set.of("pending", "driverAssigned", "driverArrived", "tripStarted");
-    // Margen que le damos al cliente para cancelar por su cuenta (el
-    // WaitingForDriverDialog de passenger_app usa 30s) antes de que el
-    // backend intervenga -- cubre el caso de que el pasajero cierre la app y
-    // nunca la vuelva a abrir, donde de otra forma la solicitud quedaría
-    // 'pending' en Realtime Database para siempre. Se agenda en requestRide
-    // y se ejecuta en expireIfStillPending.
-    private static final long PENDING_REQUEST_EXPIRY_SECONDS = 35;
+    // taxiapp.rides.pending-request-expiry es el margen que le damos al
+    // cliente para cancelar por su cuenta (el WaitingForDriverDialog de
+    // passenger_app usa 30s) antes de que el backend intervenga -- cubre el
+    // caso de que el pasajero cierre la app y nunca la vuelva a abrir, donde
+    // de otra forma la solicitud quedaría 'pending' en Realtime Database para
+    // siempre. Se agenda en requestRide y se ejecuta en expireIfStillPending.
 
     // Largo máximo del sector que se persiste. El más largo del .geojson actual
     // ("Sector tanques de agua la saboya") tiene 32 caracteres, así que 80 deja
@@ -97,8 +101,6 @@ public class RideService {
     // se usa rideId -- no passengerId -- como clave del hilo).
     private static final String CHATS_COLLECTION = "chats";
     private static final String MESSAGES_SUBCOLLECTION = "messages";
-    private static final int CHAT_MESSAGE_MAX_LENGTH = 1000;
-    private static final long CHAT_RETENTION_DAYS = 7;
 
     private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
@@ -106,17 +108,25 @@ public class RideService {
     private final Firestore firestore;
     private final NotificationService notificationService;
     private final TaskScheduler taskScheduler;
+    private final TaxiappProperties.Rides rideSettings;
+    private final TaxiappProperties.Chat chatSettings;
+    private final long timeoutMillis;
 
     public RideService(
             FirebaseDatabase firebaseDatabase,
             Firestore firestore,
             NotificationService notificationService,
-            TaskScheduler taskScheduler
+            TaskScheduler taskScheduler,
+            TaxiappProperties properties,
+            FirebaseProperties firebaseProperties
     ) {
         this.firebaseDatabase = firebaseDatabase;
         this.firestore = firestore;
         this.notificationService = notificationService;
         this.taskScheduler = taskScheduler;
+        this.rideSettings = properties.rides();
+        this.chatSettings = properties.chat();
+        this.timeoutMillis = firebaseProperties.operationTimeout().toMillis();
     }
 
     // Reemplaza el .set() que antes hacía passenger_app directo sobre
@@ -173,25 +183,25 @@ public class RideService {
         });
 
         try {
-            future.get(15, TimeUnit.SECONDS);
+            future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al crear la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideRequestException("No se pudo crear la solicitud", e);
+            throw new ExternalServiceException("No se pudo crear la solicitud", e);
         } catch (ExecutionException | TimeoutException e) {
             log.error("RideDebug | Error al crear la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideRequestException("No se pudo crear la solicitud", e);
+            throw new ExternalServiceException("No se pudo crear la solicitud", e);
         }
 
         log.info("RideDebug | Solicitud creada para passengerId={}", passengerId);
 
         taskScheduler.schedule(
                 () -> expireIfStillPending(passengerId),
-                Instant.now().plusSeconds(PENDING_REQUEST_EXPIRY_SECONDS)
+                Instant.now().plus(rideSettings.pendingRequestExpiry())
         );
     }
 
-    // Tarea agendada desde requestRide: si pasado PENDING_REQUEST_EXPIRY_SECONDS
+    // Tarea agendada desde requestRide: si pasado taxiapp.rides.pending-request-expiry
     // la solicitud sigue 'pending' (nadie la aceptó y el pasajero tampoco la
     // canceló por su cuenta), el backend la cancela automáticamente -- red de
     // seguridad para cuando el pasajero cierra la app y nunca la reabre, caso
@@ -230,7 +240,7 @@ public class RideService {
 
         RideTransactionOutcome outcome;
         try {
-            outcome = future.get(15, TimeUnit.SECONDS);
+            outcome = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al auto-cancelar la solicitud de passengerId={}: {}", passengerId, e.getMessage(), e);
@@ -257,7 +267,7 @@ public class RideService {
             return;
         }
 
-        log.info("RideDebug | Solicitud de passengerId={} auto-cancelada tras {}s sin conductor", passengerId, PENDING_REQUEST_EXPIRY_SECONDS);
+        log.info("RideDebug | Solicitud de passengerId={} auto-cancelada tras {}s sin conductor", passengerId, rideSettings.pendingRequestExpiry().toSeconds());
         scheduleRideCleanup(rideRef, passengerId);
     }
 
@@ -280,7 +290,7 @@ public class RideService {
     private DriverVehicleInfo fetchDriverVehicleInfo(String driverUid) {
         try {
             DocumentSnapshot driverSnapshot =
-                    firestore.collection(DRIVERS_COLLECTION).document(driverUid).get().get(15, TimeUnit.SECONDS);
+                    firestore.collection(DRIVERS_COLLECTION).document(driverUid).get().get(timeoutMillis, TimeUnit.MILLISECONDS);
             if (!driverSnapshot.exists() || driverSnapshot.getData() == null) {
                 return DriverVehicleInfo.EMPTY;
             }
@@ -292,7 +302,7 @@ public class RideService {
             }
 
             DocumentSnapshot vehicleSnapshot =
-                    firestore.collection(VEHICLES_COLLECTION).document(vehicleId).get().get(15, TimeUnit.SECONDS);
+                    firestore.collection(VEHICLES_COLLECTION).document(vehicleId).get().get(timeoutMillis, TimeUnit.MILLISECONDS);
             if (!vehicleSnapshot.exists() || vehicleSnapshot.getData() == null) {
                 return new DriverVehicleInfo(phoneNumber, null, null, null, null);
             }
@@ -391,26 +401,26 @@ public class RideService {
 
         RideTransactionOutcome outcome;
         try {
-            outcome = future.get(15, TimeUnit.SECONDS);
+            outcome = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al aceptar la carrera de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideAcceptException("No se pudo aceptar la carrera", e);
+            throw new ExternalServiceException("No se pudo aceptar la carrera", e);
         } catch (ExecutionException | TimeoutException e) {
             log.error("RideDebug | Error al aceptar la carrera de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideAcceptException("No se pudo aceptar la carrera", e);
+            throw new ExternalServiceException("No se pudo aceptar la carrera", e);
         }
 
         if (outcome.error() != null) {
             log.error("RideDebug | Firebase rechazó la transacción de passengerId={}: {}", passengerId, outcome.error().getMessage());
-            throw new RideAcceptException("No se pudo aceptar la carrera", outcome.error().toException());
+            throw new ExternalServiceException("No se pudo aceptar la carrera", outcome.error().toException());
         }
 
         DataSnapshot snapshot = outcome.currentData();
         if (snapshot == null || !snapshot.exists()) {
             // Cubre tanto el caso real de "nunca existió" como el commit sin
             // cambios que hacemos cuando doTransaction ve currentData nulo.
-            throw new RideNotFoundException(passengerId);
+            throw rideNotFound(passengerId);
         }
 
         String finalStatus = (String) snapshot.child("status").getValue();
@@ -418,7 +428,7 @@ public class RideService {
         boolean assignedToThisDriver = "driverAssigned".equals(finalStatus) && driverUid.equals(assignedDriverId);
 
         if (!outcome.committed() || !assignedToThisDriver) {
-            throw new RideAlreadyAssignedException(passengerId);
+            throw rideAlreadyTaken(passengerId);
         }
 
         log.info("RideDebug | Carrera de passengerId={} aceptada por driverUid={}", passengerId, driverUid);
@@ -448,7 +458,7 @@ public class RideService {
         chatData.put("createdAt", Timestamp.now());
 
         try {
-            firestore.collection(CHATS_COLLECTION).document(rideId).set(chatData).get(15, TimeUnit.SECONDS);
+            firestore.collection(CHATS_COLLECTION).document(rideId).set(chatData).get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("ChatDebug | Interrumpido al crear el hilo de chat de rideId={}: {}", rideId, e.getMessage(), e);
@@ -510,19 +520,19 @@ public class RideService {
 
         RideTransactionOutcome outcome;
         try {
-            outcome = future.get(15, TimeUnit.SECONDS);
+            outcome = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al cancelar la carrera de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideCancelException("No se pudo cancelar la carrera", e);
+            throw new ExternalServiceException("No se pudo cancelar la carrera", e);
         } catch (ExecutionException | TimeoutException e) {
             log.error("RideDebug | Error al cancelar la carrera de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideCancelException("No se pudo cancelar la carrera", e);
+            throw new ExternalServiceException("No se pudo cancelar la carrera", e);
         }
 
         if (outcome.error() != null) {
             log.error("RideDebug | Firebase rechazó la transacción de cancelación de passengerId={}: {}", passengerId, outcome.error().getMessage());
-            throw new RideCancelException("No se pudo cancelar la carrera", outcome.error().toException());
+            throw new ExternalServiceException("No se pudo cancelar la carrera", outcome.error().toException());
         }
 
         DataSnapshot snapshot = outcome.currentData();
@@ -535,14 +545,14 @@ public class RideService {
         // carrera no siga activa- ya se cumplió. Tratamos ambos casos como
         // éxito en vez de error, para que el cliente no reciba un falso
         // failure cuando en realidad ganó la carrera contra
-        // expireIfStillPending (ver PENDING_REQUEST_EXPIRY_SECONDS).
+        // expireIfStillPending (ver taxiapp.rides.pending-request-expiry).
         if (snapshot == null || !snapshot.exists()) {
             log.info("RideDebug | cancelRide de passengerId={} no encontró la solicitud (ya limpiada) -- se toma como éxito idempotente", passengerId);
             return;
         }
 
         if (abortReason.get() == OperationAbortReason.FORBIDDEN) {
-            throw new RideForbiddenException(passengerId);
+            throw rideForbidden(passengerId);
         }
 
         String finalStatus = (String) snapshot.child("status").getValue();
@@ -554,7 +564,7 @@ public class RideService {
             // Cualquier otro status ya-terminal (ej. tripCompleted) sí es un
             // conflicto real: no tiene sentido "cancelar" un viaje que ya se
             // completó.
-            throw new RideAlreadyFinishedException(passengerId);
+            throw rideAlreadyFinished(passengerId);
         }
 
         String cancelledBy = (String) snapshot.child("cancelledBy").getValue();
@@ -636,33 +646,33 @@ public class RideService {
 
         RideTransactionOutcome outcome;
         try {
-            outcome = future.get(15, TimeUnit.SECONDS);
+            outcome = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("RideDebug | Interrumpido al finalizar el viaje de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideCompleteException("No se pudo finalizar el viaje", e);
+            throw new ExternalServiceException("No se pudo finalizar el viaje", e);
         } catch (ExecutionException | TimeoutException e) {
             log.error("RideDebug | Error al finalizar el viaje de passengerId={}: {}", passengerId, e.getMessage(), e);
-            throw new RideCompleteException("No se pudo finalizar el viaje", e);
+            throw new ExternalServiceException("No se pudo finalizar el viaje", e);
         }
 
         if (outcome.error() != null) {
             log.error("RideDebug | Firebase rechazó la transacción de finalización de passengerId={}: {}", passengerId, outcome.error().getMessage());
-            throw new RideCompleteException("No se pudo finalizar el viaje", outcome.error().toException());
+            throw new ExternalServiceException("No se pudo finalizar el viaje", outcome.error().toException());
         }
 
         DataSnapshot snapshot = outcome.currentData();
         if (snapshot == null || !snapshot.exists()) {
-            throw new RideNotFoundException(passengerId);
+            throw rideNotFound(passengerId);
         }
 
         if (abortReason.get() == OperationAbortReason.FORBIDDEN) {
-            throw new RideForbiddenException(passengerId);
+            throw rideForbidden(passengerId);
         }
 
         String finalStatus = (String) snapshot.child("status").getValue();
         if (!outcome.committed() || !"tripCompleted".equals(finalStatus)) {
-            throw new RideAlreadyFinishedException(passengerId);
+            throw rideAlreadyFinished(passengerId);
         }
 
         log.info("RideDebug | Viaje de passengerId={} finalizado por driverUid={}", passengerId, driverUid);
@@ -695,7 +705,7 @@ public class RideService {
                     log.error("RideDebug | No se pudo limpiar el nodo de passengerId={} tras finalizar/cancelar: {}", passengerId, error.getMessage());
                 }
             }
-        }), CompletableFuture.delayedExecutor(RIDE_CLEANUP_DELAY_SECONDS, TimeUnit.SECONDS));
+        }), CompletableFuture.delayedExecutor(rideSettings.terminalCleanupDelay().toMillis(), TimeUnit.MILLISECONDS));
     }
 
     // Escribe un mensaje de chat y avisa por push al otro participante.
@@ -707,7 +717,7 @@ public class RideService {
         DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
         DataSnapshot snapshot = readSnapshot(rideRef);
         if (snapshot == null || !snapshot.exists()) {
-            throw new RideNotFoundException(passengerId);
+            throw rideNotFound(passengerId);
         }
 
         String status = (String) snapshot.child("status").getValue();
@@ -715,7 +725,7 @@ public class RideService {
             // 'pending' (sin conductor asignado todavía) también cae acá:
             // el chat solo tiene sentido una vez que hay alguien del otro
             // lado para leerlo.
-            throw new RideAlreadyFinishedException(passengerId);
+            throw rideAlreadyFinished(passengerId);
         }
 
         String assignedDriverId = (String) snapshot.child("driver").child("data").child("id").getValue();
@@ -731,20 +741,20 @@ public class RideService {
             recipientCollection = PASSENGERS_COLLECTION;
             recipientUid = passengerId;
         } else {
-            throw new RideForbiddenException(passengerId);
+            throw rideForbidden(passengerId);
         }
 
         // El controller ya rechazó con 400 un texto null/blank antes de
         // llamar acá -- lo único que queda por sanear es el largo máximo.
         String trimmedText = text.trim();
-        if (trimmedText.length() > CHAT_MESSAGE_MAX_LENGTH) {
-            trimmedText = trimmedText.substring(0, CHAT_MESSAGE_MAX_LENGTH);
+        if (trimmedText.length() > chatSettings.maxMessageLength()) {
+            trimmedText = trimmedText.substring(0, chatSettings.maxMessageLength());
         }
 
         String rideId = (String) snapshot.child("rideId").getValue();
         Timestamp now = Timestamp.now();
         Timestamp expireAt = Timestamp.ofTimeSecondsAndNanos(
-                now.getSeconds() + CHAT_RETENTION_DAYS * 24 * 60 * 60,
+                now.getSeconds() + chatSettings.retention().toSeconds(),
                 now.getNanos()
         );
 
@@ -760,19 +770,19 @@ public class RideService {
                     .document(rideId)
                     .collection(MESSAGES_SUBCOLLECTION)
                     .add(messageData)
-                    .get(15, TimeUnit.SECONDS);
+                    .get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("ChatDebug | Interrumpido al enviar mensaje en rideId={}: {}", rideId, e.getMessage(), e);
-            throw new ChatMessageException("No se pudo enviar el mensaje", e);
+            throw new ExternalServiceException("No se pudo enviar el mensaje", e);
         } catch (ExecutionException | TimeoutException e) {
             log.error("ChatDebug | Error al enviar mensaje en rideId={}: {}", rideId, e.getMessage(), e);
-            throw new ChatMessageException("No se pudo enviar el mensaje", e);
+            throw new ExternalServiceException("No se pudo enviar el mensaje", e);
         }
 
         log.info("ChatDebug | Mensaje enviado en rideId={} por senderRole={}", rideId, senderRole);
 
-        String preview = trimmedText.length() > 80 ? trimmedText.substring(0, 80) + "…" : trimmedText;
+        String preview = trimmedText.length() > chatSettings.pushPreviewLength() ? trimmedText.substring(0, chatSettings.pushPreviewLength()) + "…" : trimmedText;
         notifyByFcm(
                 recipientCollection,
                 recipientUid,
@@ -862,12 +872,12 @@ public class RideService {
         });
 
         try {
-            return future.get(15, TimeUnit.SECONDS);
+            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RideQueryException("No se pudo consultar el viaje activo", e);
+            throw new ExternalServiceException("No se pudo consultar el viaje activo", e);
         } catch (ExecutionException | TimeoutException e) {
-            throw new RideQueryException("No se pudo consultar el viaje activo", e);
+            throw new ExternalServiceException("No se pudo consultar el viaje activo", e);
         }
     }
 
@@ -939,5 +949,22 @@ public class RideService {
     }
 
     private record RideTransactionOutcome(DatabaseError error, boolean committed, DataSnapshot currentData) {
+    }
+
+    private static NotFoundException rideNotFound(String passengerId) {
+        return new NotFoundException("No existe una solicitud de carrera activa para passengerId: " + passengerId);
+    }
+
+    private static ConflictException rideAlreadyTaken(String passengerId) {
+        return new ConflictException("La carrera de passengerId=" + passengerId
+                + " ya fue tomada por otro conductor o ya no está disponible");
+    }
+
+    private static ConflictException rideAlreadyFinished(String passengerId) {
+        return new ConflictException("La carrera de passengerId=" + passengerId + " ya estaba cancelada o finalizada");
+    }
+
+    private static ForbiddenException rideForbidden(String passengerId) {
+        return new ForbiddenException("El llamador no está autorizado para esta operación sobre passengerId=" + passengerId);
     }
 }

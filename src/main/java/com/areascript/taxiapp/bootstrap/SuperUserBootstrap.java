@@ -1,5 +1,6 @@
 package com.areascript.taxiapp.bootstrap;
 
+import com.areascript.taxiapp.common.config.TaxiappProperties;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.SetOptions;
 import com.google.firebase.auth.AuthErrorCode;
@@ -22,44 +23,55 @@ import java.util.Map;
 // existe en el proyecto de Firebase activo (ej. al correr con el profile
 // 'prod', que usa un proyecto de Firebase distinto al de dev), lo registra
 // como advertencia y deja que el arranque continúe con normalidad.
+//
+// El uid del fundador sale de taxiapp.admin.founder-uid (ver
+// TaxiappProperties.Admin). Si no está configurado, se omite el bootstrap: el
+// claim de superuser ya asignado en Firebase sigue vigente.
 @Component
 public class SuperUserBootstrap implements CommandLineRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SuperUserBootstrap.class);
     private static final String DRIVERS_COLLECTION = "drivers";
-    private static final String SUPER_USER_UID = "AhsQJcGg49UQkLWiuy6trG0BWzq1";
 
     private final FirebaseAuth firebaseAuth;
     private final Firestore firestore;
+    private final TaxiappProperties.Admin adminSettings;
 
-    public SuperUserBootstrap(FirebaseAuth firebaseAuth, Firestore firestore) {
+    public SuperUserBootstrap(FirebaseAuth firebaseAuth, Firestore firestore, TaxiappProperties properties) {
         this.firebaseAuth = firebaseAuth;
         this.firestore = firestore;
+        this.adminSettings = properties.admin();
     }
 
     @Override
     public void run(String... args) {
+        if (!adminSettings.hasFounder()) {
+            log.warn("SuperUserBootstrapDebug | taxiapp.admin.founder-uid no está configurado, se omite el bootstrap de superuser");
+            return;
+        }
+        final String founderUid = adminSettings.founderUid();
+
         UserRecord user;
         try {
-            user = firebaseAuth.getUser(SUPER_USER_UID);
+            user = firebaseAuth.getUser(founderUid);
         } catch (FirebaseAuthException e) {
             if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
-                log.warn("SuperUserBootstrapDebug | uid={} no existe en este proyecto de Firebase, se omite el bootstrap de superuser", SUPER_USER_UID);
+                log.warn("SuperUserBootstrapDebug | uid={} no existe en este proyecto de Firebase, se omite el bootstrap de superuser", founderUid);
             } else {
-                log.error("SuperUserBootstrapDebug | Error al consultar uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
+                log.error("SuperUserBootstrapDebug | Error al consultar uid={}: {}", founderUid, e.getMessage(), e);
             }
             return;
         } catch (Exception e) {
-            log.error("SuperUserBootstrapDebug | Error inesperado al consultar uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
+            log.error("SuperUserBootstrapDebug | Error inesperado al consultar uid={}: {}", founderUid, e.getMessage(), e);
             return;
         }
 
         if (!Boolean.TRUE.equals(user.getCustomClaims().get("superuser"))) {
             try {
-                firebaseAuth.setCustomUserClaims(SUPER_USER_UID, Map.of("admin", true, "superuser", true));
-                log.info("SuperUserBootstrapDebug | uid={} promovido a superuser correctamente", SUPER_USER_UID);
+                firebaseAuth.setCustomUserClaims(founderUid, Map.of("admin", true, "superuser", true));
+                log.info("SuperUserBootstrapDebug | uid={} promovido a superuser correctamente", founderUid);
             } catch (Exception e) {
-                log.error("SuperUserBootstrapDebug | Error al promover a superuser uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
+                log.error("SuperUserBootstrapDebug | Error al promover a superuser uid={}: {}", founderUid, e.getMessage(), e);
                 return;
             }
         }
@@ -70,11 +82,11 @@ public class SuperUserBootstrap implements CommandLineRunner {
         // el campo 'role' sin depender de reintentar el bloque de arriba.
         try {
             firestore.collection(DRIVERS_COLLECTION)
-                    .document(SUPER_USER_UID)
+                    .document(founderUid)
                     .set(Map.of("role", "superuser"), SetOptions.merge())
                     .get();
         } catch (Exception e) {
-            log.error("SuperUserBootstrapDebug | Error al sincronizar role=superuser en Firestore para uid={}: {}", SUPER_USER_UID, e.getMessage(), e);
+            log.error("SuperUserBootstrapDebug | Error al sincronizar role=superuser en Firestore para uid={}: {}", founderUid, e.getMessage(), e);
         }
     }
 }

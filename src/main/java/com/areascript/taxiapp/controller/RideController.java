@@ -1,24 +1,13 @@
 package com.areascript.taxiapp.controller;
 
+import com.areascript.taxiapp.common.error.InvalidInputException;
 import com.areascript.taxiapp.dto.AcceptRideRequest;
 import com.areascript.taxiapp.dto.RequestRideRequest;
 import com.areascript.taxiapp.dto.SendChatMessageRequest;
 import com.areascript.taxiapp.security.FirebaseSecurityUtils;
-import com.areascript.taxiapp.service.ChatMessageException;
-import com.areascript.taxiapp.service.RideAcceptException;
-import com.areascript.taxiapp.service.RideAlreadyAssignedException;
-import com.areascript.taxiapp.service.RideAlreadyFinishedException;
-import com.areascript.taxiapp.service.RideCancelException;
-import com.areascript.taxiapp.service.RideCompleteException;
-import com.areascript.taxiapp.service.RideForbiddenException;
-import com.areascript.taxiapp.service.RideNotFoundException;
-import com.areascript.taxiapp.service.RideQueryException;
-import com.areascript.taxiapp.service.RideRequestException;
 import com.areascript.taxiapp.service.RideService;
 import com.google.firebase.auth.FirebaseToken;
 import jakarta.servlet.http.HttpServletRequest;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 
+// Los errores de negocio (404 sin solicitud, 409 carrera ya tomada, 403 no
+// participante, 500 Firebase) los traduce GlobalExceptionHandler a partir de
+// la excepción que lanza RideService: acá solo queda el camino feliz.
 @RestController
 @RequestMapping("/api/rides")
 public class RideController {
@@ -39,8 +31,6 @@ public class RideController {
     public RideController(RideService rideService) {
         this.rideService = rideService;
     }
-
-    private static final Logger log = LoggerFactory.getLogger(RideController.class);
 
     // Reemplaza el .set() directo que hacía passenger_app sobre Realtime
     // Database al pedir un taxi: pasa por el backend para poder agendar la
@@ -56,20 +46,16 @@ public class RideController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        try {
-            rideService.requestRide(
-                    token.getUid(),
-                    token.getName(),
-                    token.getPicture(),
-                    body.latitude(),
-                    body.longitude(),
-                    body.address(),
-                    body.sector()
-            );
-            return ResponseEntity.noContent().build();
-        } catch (RideRequestException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        rideService.requestRide(
+                token.getUid(),
+                token.getName(),
+                token.getPicture(),
+                body.latitude(),
+                body.longitude(),
+                body.address(),
+                body.sector()
+        );
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{passengerId}/accept")
@@ -78,31 +64,21 @@ public class RideController {
             @RequestBody AcceptRideRequest body,
             HttpServletRequest request
     ) {
-
-        log.info("Calling accept ride");
         FirebaseToken token = FirebaseSecurityUtils.getToken(request);
         if (token == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        try {
-            rideService.acceptRide(
-                    passengerId,
-                    token.getUid(),
-                    token.getEmail(),
-                    token.getName(),
-                    token.getPicture(),
-                    body.latitude(),
-                    body.longitude()
-            );
-            return ResponseEntity.noContent().build();
-        } catch (RideNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (RideAlreadyAssignedException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        } catch (RideAcceptException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        rideService.acceptRide(
+                passengerId,
+                token.getUid(),
+                token.getEmail(),
+                token.getName(),
+                token.getPicture(),
+                body.latitude(),
+                body.longitude()
+        );
+        return ResponseEntity.noContent().build();
     }
 
     // Único endpoint para cancelar, usado tanto por el pasajero como por el
@@ -121,18 +97,8 @@ public class RideController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        try {
-            rideService.cancelRide(passengerId, token.getUid());
-            return ResponseEntity.noContent().build();
-        } catch (RideNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (RideForbiddenException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (RideAlreadyFinishedException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        } catch (RideCancelException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        rideService.cancelRide(passengerId, token.getUid());
+        return ResponseEntity.noContent().build();
     }
 
     // Solo el conductor asignado puede finalizar el viaje (verificado
@@ -147,18 +113,8 @@ public class RideController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        try {
-            rideService.completeTrip(passengerId, token.getUid());
-            return ResponseEntity.noContent().build();
-        } catch (RideNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (RideForbiddenException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (RideAlreadyFinishedException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        } catch (RideCompleteException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        rideService.completeTrip(passengerId, token.getUid());
+        return ResponseEntity.noContent().build();
     }
 
     // Mensajería de chat entre pasajero y conductor durante un viaje activo.
@@ -176,21 +132,11 @@ public class RideController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         if (body.text() == null || body.text().isBlank()) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            throw new InvalidInputException("El mensaje no puede estar vacío");
         }
 
-        try {
-            rideService.sendChatMessage(passengerId, token.getUid(), body.text());
-            return ResponseEntity.noContent().build();
-        } catch (RideNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (RideForbiddenException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (RideAlreadyFinishedException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        } catch (ChatMessageException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        rideService.sendChatMessage(passengerId, token.getUid(), body.text());
+        return ResponseEntity.noContent().build();
     }
 
     // Reemplaza la lectura directa que hacía passenger_app sobre su propio
@@ -204,14 +150,10 @@ public class RideController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        try {
-            Map<String, Object> ride = rideService.findActiveRideForPassenger(token.getUid());
-            return ride == null
-                    ? ResponseEntity.noContent().build()
-                    : ResponseEntity.ok(ride);
-        } catch (RideQueryException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        Map<String, Object> ride = rideService.findActiveRideForPassenger(token.getUid());
+        return ride == null
+                ? ResponseEntity.noContent().build()
+                : ResponseEntity.ok(ride);
     }
 
     // Reemplaza el escaneo completo de /taxi_requests que hacía driver_app
@@ -224,13 +166,9 @@ public class RideController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        try {
-            Map<String, Object> ride = rideService.findActiveRideForDriver(token.getUid());
-            return ride == null
-                    ? ResponseEntity.noContent().build()
-                    : ResponseEntity.ok(ride);
-        } catch (RideQueryException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        Map<String, Object> ride = rideService.findActiveRideForDriver(token.getUid());
+        return ride == null
+                ? ResponseEntity.noContent().build()
+                : ResponseEntity.ok(ride);
     }
 }

@@ -1,5 +1,7 @@
 package com.areascript.taxiapp.service;
 
+import com.areascript.taxiapp.common.error.ConflictException;
+import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.google.firebase.auth.AuthErrorCode;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
@@ -40,7 +42,7 @@ public class AccountService {
     public void deleteOwnAccount(String uid) {
         if (rideService.findActiveRideForDriver(uid) != null
                 || rideService.findActiveRideForPassenger(uid) != null) {
-            throw new AccountHasActiveRideException(uid);
+            throw new ConflictException("No se puede eliminar la cuenta uid=" + uid + ": tiene un viaje activo");
         }
 
         accountCleanupService.wipeUserData(uid);
@@ -67,7 +69,7 @@ public class AccountService {
                 return;
             }
             log.error("AccountDebug | Error al eliminar uid={} de Firebase Authentication: {}", uid, e.getMessage(), e);
-            throw new AccountDeletionException("No se pudo eliminar el usuario de Firebase Authentication", e);
+            throw new ExternalServiceException("No se pudo eliminar el usuario de Firebase Authentication", e);
         }
 
         log.info("AccountDebug | Cuenta uid={} eliminada completamente", uid);

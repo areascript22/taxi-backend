@@ -1,5 +1,6 @@
 package com.areascript.taxiapp.service;
 
+import com.areascript.taxiapp.common.firebase.FirebaseProperties;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
@@ -35,10 +36,12 @@ public class AccountCleanupService {
 
     private final Firestore firestore;
     private final FirebaseApp firebaseApp;
+    private final long timeoutMillis;
 
-    public AccountCleanupService(Firestore firestore, FirebaseApp firebaseApp) {
+    public AccountCleanupService(Firestore firestore, FirebaseApp firebaseApp, FirebaseProperties firebaseProperties) {
         this.firestore = firestore;
         this.firebaseApp = firebaseApp;
+        this.timeoutMillis = firebaseProperties.operationTimeout().toMillis();
     }
 
     // Cada paso es best-effort (se loguea y se sigue) salvo el borrado final
@@ -82,7 +85,7 @@ public class AccountCleanupService {
             chatDocs = firestore.collection(CHATS_COLLECTION)
                     .whereEqualTo(field, uid)
                     .get()
-                    .get(15, TimeUnit.SECONDS)
+                    .get(timeoutMillis, TimeUnit.MILLISECONDS)
                     .getDocuments();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -105,10 +108,10 @@ public class AccountCleanupService {
                     .document(rideId)
                     .collection(MESSAGES_SUBCOLLECTION)
                     .get()
-                    .get(15, TimeUnit.SECONDS)
+                    .get(timeoutMillis, TimeUnit.MILLISECONDS)
                     .getDocuments();
             for (QueryDocumentSnapshot message : messages) {
-                message.getReference().delete().get(15, TimeUnit.SECONDS);
+                message.getReference().delete().get(timeoutMillis, TimeUnit.MILLISECONDS);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -120,7 +123,7 @@ public class AccountCleanupService {
 
     private DocumentSnapshot getDocument(String collection, String docId) {
         try {
-            return firestore.collection(collection).document(docId).get().get(15, TimeUnit.SECONDS);
+            return firestore.collection(collection).document(docId).get().get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("AccountCleanupDebug | Interrumpido al leer {}/{}: {}", collection, docId, e.getMessage(), e);
@@ -133,7 +136,7 @@ public class AccountCleanupService {
 
     private void deleteDocument(String collection, String docId) {
         try {
-            firestore.collection(collection).document(docId).delete().get(15, TimeUnit.SECONDS);
+            firestore.collection(collection).document(docId).delete().get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("AccountCleanupDebug | Interrumpido al borrar {}/{}: {}", collection, docId, e.getMessage(), e);

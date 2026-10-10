@@ -29,9 +29,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 //
 // Jerarquía que aplican todas las acciones de moderación: nadie actúa sobre un
 // superuser, y un admin no actúa sobre otro admin (un superuser sí).
+//
+// FOUNDER_UID/FOUNDER_EMAIL vienen de CharacterizationTestBase: desde la fase 1
+// el fundador es configuración (taxiapp.admin.*), ya no una constante en código.
 class DriverAdminCharacterizationTest extends CharacterizationTestBase {
-
-    private static final String FOUNDER_UID = "AhsQJcGg49UQkLWiuy6trG0BWzq1";
 
     private void storedDriver(String uid, Map<String, Object> extra) {
         Map<String, Object> data = new HashMap<>();
@@ -306,6 +307,30 @@ class DriverAdminCharacterizationTest extends CharacterizationTestBase {
                     .andExpect(status().isForbidden());
 
             verify(firebaseAuth, never()).setCustomUserClaims(anyString(), any());
+        }
+
+        // El fundador puede cambiar roles aunque todavía no tenga el claim de
+        // superuser, siempre que coincidan uid Y email del token.
+        @Test
+        void el_fundador_sin_claims_puede_cambiar_roles() throws Exception {
+            storedDriver("d1", Map.of());
+            authUser("d1", Map.of());
+            String founderToken = token(FOUNDER_UID, FOUNDER_EMAIL, "Fundador", null, Map.of());
+
+            mvc.perform(put("/api/drivers/d1/role").header("Authorization", founderToken)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"admin\"}"))
+                    .andExpect(status().isNoContent());
+        }
+
+        @Test
+        void el_uid_del_fundador_con_otro_email_no_alcanza() throws Exception {
+            storedDriver("d1", Map.of());
+            authUser("d1", Map.of());
+            String impostor = token(FOUNDER_UID, "otro@test.com", "Impostor", null, Map.of());
+
+            mvc.perform(put("/api/drivers/d1/role").header("Authorization", impostor)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"admin\"}"))
+                    .andExpect(status().isForbidden());
         }
 
         @Test

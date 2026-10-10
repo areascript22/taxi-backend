@@ -1,5 +1,11 @@
 package com.areascript.taxiapp.service;
 
+import com.areascript.taxiapp.common.config.TaxiappProperties;
+import com.areascript.taxiapp.common.error.ConflictException;
+import com.areascript.taxiapp.common.error.ExternalServiceException;
+import com.areascript.taxiapp.common.error.ForbiddenException;
+import com.areascript.taxiapp.common.error.InvalidInputException;
+import com.areascript.taxiapp.common.error.NotFoundException;
 import com.areascript.taxiapp.dto.DriverDTO;
 import com.areascript.taxiapp.dto.DriverPageDTO;
 import com.areascript.taxiapp.dto.VehicleDTO;
@@ -33,16 +39,22 @@ public class DriverAdminService {
     private static final String VEHICLES_COLLECTION = "vehicles";
     private static final Set<String> VALID_ROLES = Set.of("superuser", "admin", "driver");
     private static final Set<String> VALID_APPROVAL_STATUSES = Set.of("pending", "approved", "rejected");
-    private static final String SUPER_ADMIN_UID = "AhsQJcGg49UQkLWiuy6trG0BWzq1";
 
     private final Firestore firestore;
     private final FirebaseAuth firebaseAuth;
     private final AccountCleanupService accountCleanupService;
+    private final TaxiappProperties.Admin adminSettings;
 
-    public DriverAdminService(Firestore firestore, FirebaseAuth firebaseAuth, AccountCleanupService accountCleanupService) {
+    public DriverAdminService(
+            Firestore firestore,
+            FirebaseAuth firebaseAuth,
+            AccountCleanupService accountCleanupService,
+            TaxiappProperties properties
+    ) {
         this.firestore = firestore;
         this.firebaseAuth = firebaseAuth;
         this.accountCleanupService = accountCleanupService;
+        this.adminSettings = properties.admin();
     }
 
     public void deleteDriver(String uid, boolean callerIsSuperUser) {
@@ -51,10 +63,10 @@ public class DriverAdminService {
             targetUser = firebaseAuth.getUser(uid);
         } catch (FirebaseAuthException e) {
             if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
-                throw new DriverNotFoundException(uid);
+                throw driverNotFound(uid);
             }
             log.error("DriverAdminDebug | Error al consultar uid={} antes de eliminar: {}", uid, e.getMessage(), e);
-            throw new DriverDeletionException("No se pudo verificar el usuario antes de eliminarlo", e);
+            throw new ExternalServiceException("No se pudo verificar el usuario antes de eliminarlo", e);
         }
 
         Map<String, Object> targetClaims = targetUser.getCustomClaims();
@@ -62,20 +74,20 @@ public class DriverAdminService {
         boolean targetIsAdmin = targetClaims != null && Boolean.TRUE.equals(targetClaims.get("admin"));
 
         if (targetIsSuperUser) {
-            throw new RoleHierarchyViolationException("No se puede eliminar a un superuser");
+            throw new ForbiddenException("No se puede eliminar a un superuser");
         }
         if (targetIsAdmin && !callerIsSuperUser) {
-            throw new RoleHierarchyViolationException("Un admin no puede eliminar a otro admin");
+            throw new ForbiddenException("Un admin no puede eliminar a otro admin");
         }
 
         try {
             firebaseAuth.deleteUser(uid);
         } catch (FirebaseAuthException e) {
             if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
-                throw new DriverNotFoundException(uid);
+                throw driverNotFound(uid);
             }
             log.error("DriverAdminDebug | Error al eliminar uid={} de Firebase Auth: {}", uid, e.getMessage(), e);
-            throw new DriverDeletionException("No se pudo eliminar el usuario de Firebase Authentication", e);
+            throw new ExternalServiceException("No se pudo eliminar el usuario de Firebase Authentication", e);
         }
 
         // Limpieza completa (doc de drivers, vehículo asociado, foto en
@@ -101,10 +113,10 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al listar la colección '{}': {}", DRIVERS_COLLECTION, e.getMessage(), e);
-            throw new DriverListException("No se pudo obtener la lista de drivers", e);
+            throw new ExternalServiceException("No se pudo obtener la lista de drivers", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al listar la colección '{}': {}", DRIVERS_COLLECTION, e.getMessage(), e);
-            throw new DriverListException("No se pudo obtener la lista de drivers", e);
+            throw new ExternalServiceException("No se pudo obtener la lista de drivers", e);
         }
     }
 
@@ -144,10 +156,10 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al paginar la colección '{}': {}", DRIVERS_COLLECTION, e.getMessage(), e);
-            throw new DriverListException("No se pudo obtener la página de drivers", e);
+            throw new ExternalServiceException("No se pudo obtener la página de drivers", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al paginar la colección '{}': {}", DRIVERS_COLLECTION, e.getMessage(), e);
-            throw new DriverListException("No se pudo obtener la página de drivers", e);
+            throw new ExternalServiceException("No se pudo obtener la página de drivers", e);
         }
     }
 
@@ -158,16 +170,16 @@ public class DriverAdminService {
         try {
             DocumentSnapshot snapshot = firestore.collection(DRIVERS_COLLECTION).document(uid).get().get();
             if (!snapshot.exists()) {
-                throw new DriverNotFoundException(uid);
+                throw driverNotFound(uid);
             }
             return toDriverDTO(snapshot);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al obtener uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverListException("No se pudo obtener el conductor", e);
+            throw new ExternalServiceException("No se pudo obtener el conductor", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al obtener uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverListException("No se pudo obtener el conductor", e);
+            throw new ExternalServiceException("No se pudo obtener el conductor", e);
         }
     }
 
@@ -220,6 +232,10 @@ public class DriverAdminService {
         );
     }
 
+    private static NotFoundException driverNotFound(String uid) {
+        return new NotFoundException("No existe ningún driver con uid: " + uid);
+    }
+
     private static String stringField(Map<String, Object> data, String key) {
         Object value = data.get(key);
         return value == null ? "" : value.toString();
@@ -247,13 +263,13 @@ public class DriverAdminService {
             targetUser = firebaseAuth.getUser(targetUid);
         } catch (FirebaseAuthException e) {
             if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
-                throw new DriverNotFoundException(targetUid);
+                throw driverNotFound(targetUid);
             }
             log.error(
                     "DriverAdminDebug | Error al consultar uid={} antes de verificar jerarquía de roles: {}",
                     targetUid, e.getMessage(), e
             );
-            throw new DriverModerationException("No se pudo verificar el usuario antes de aplicar la acción", e);
+            throw new ExternalServiceException("No se pudo verificar el usuario antes de aplicar la acción", e);
         }
 
         Map<String, Object> targetClaims = targetUser.getCustomClaims();
@@ -266,26 +282,26 @@ public class DriverAdminService {
         );
 
         if (targetIsSuperUser) {
-            throw new RoleHierarchyViolationException("No se puede realizar esta acción sobre un superuser");
+            throw new ForbiddenException("No se puede realizar esta acción sobre un superuser");
         }
         if (targetIsAdmin && !callerIsSuperUser) {
-            throw new RoleHierarchyViolationException("Un admin no puede realizar esta acción sobre otro admin");
+            throw new ForbiddenException("Un admin no puede realizar esta acción sobre otro admin");
         }
     }
 
     public void updateDriverRole(String uid, String role) {
         if (!VALID_ROLES.contains(role)) {
-            throw new InvalidRoleException(role);
+            throw new InvalidInputException("Rol inválido: '" + role + "'. Valores permitidos: admin, driver");
         }
         // "superuser" es un rol válido del sistema, pero no un destino
         // permitido desde este endpoint -- nadie, ni siquiera otro
         // superuser, puede promover a alguien a superuser acá (eso solo
         // ocurre vía SuperUserBootstrap / intervención manual).
         if ("superuser".equals(role)) {
-            throw new RoleHierarchyViolationException("No se puede promover a nadie a superuser");
+            throw new ForbiddenException("No se puede promover a nadie a superuser");
         }
-        if (SUPER_ADMIN_UID.equals(uid)) {
-            throw new RoleHierarchyViolationException("No se puede cambiar el rol del super administrador fundador");
+        if (adminSettings.isFounder(uid)) {
+            throw new ForbiddenException("No se puede cambiar el rol del super administrador fundador");
         }
         // Este endpoint ya exige caller superuser a nivel de controller, así
         // que acá solo hace falta cerrar el caso "superuser contra otro
@@ -299,10 +315,10 @@ public class DriverAdminService {
             firebaseAuth.setCustomUserClaims(uid, Map.of("admin", isAdmin, "superuser", isSuperUser));
         } catch (FirebaseAuthException e) {
             if (e.getAuthErrorCode() == AuthErrorCode.USER_NOT_FOUND) {
-                throw new DriverNotFoundException(uid);
+                throw driverNotFound(uid);
             }
             log.error("DriverAdminDebug | Error al asignar el custom claim admin={} a uid={}: {}", isAdmin, uid, e.getMessage(), e);
-            throw new DriverRoleUpdateException("No se pudo actualizar el custom claim en Firebase Authentication", e);
+            throw new ExternalServiceException("No se pudo actualizar el custom claim en Firebase Authentication", e);
         }
 
         try {
@@ -310,10 +326,10 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al actualizar el campo 'role' de uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverRoleUpdateException("El custom claim se actualizó pero falló al actualizar el campo 'role' en Firestore", e);
+            throw new ExternalServiceException("El custom claim se actualizó pero falló al actualizar el campo 'role' en Firestore", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al actualizar el campo 'role' de uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverRoleUpdateException("El custom claim se actualizó pero falló al actualizar el campo 'role' en Firestore", e);
+            throw new ExternalServiceException("El custom claim se actualizó pero falló al actualizar el campo 'role' en Firestore", e);
         }
 
         log.info("DriverAdminDebug | Rol actualizado correctamente: uid={} -> role={}", uid, role);
@@ -321,10 +337,11 @@ public class DriverAdminService {
 
     public void updateApprovalStatus(String uid, String status, String reason, String actorUid, boolean callerIsSuperUser) {
         if (!VALID_APPROVAL_STATUSES.contains(status)) {
-            throw new InvalidApprovalStatusException(status);
+            throw new InvalidInputException("Estado de aprobación inválido: '" + status
+                    + "'. Valores permitidos: pending, approved, rejected");
         }
         if ("rejected".equals(status) && (reason == null || reason.isBlank())) {
-            throw new MissingReasonException("Se requiere un motivo para rechazar al conductor");
+            throw new InvalidInputException("Se requiere un motivo para rechazar al conductor");
         }
 
         DocumentSnapshot snapshot;
@@ -333,13 +350,13 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al verificar uid={} antes de actualizar approvalStatus: {}", uid, e.getMessage(), e);
-            throw new DriverApprovalUpdateException("No se pudo verificar el conductor", e);
+            throw new ExternalServiceException("No se pudo verificar el conductor", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al verificar uid={} antes de actualizar approvalStatus: {}", uid, e.getMessage(), e);
-            throw new DriverApprovalUpdateException("No se pudo verificar el conductor", e);
+            throw new ExternalServiceException("No se pudo verificar el conductor", e);
         }
         if (!snapshot.exists()) {
-            throw new DriverNotFoundException(uid);
+            throw driverNotFound(uid);
         }
 
         // Un admin no puede aprobar/rechazar a otro admin ni a un superuser --
@@ -364,10 +381,10 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al actualizar approvalStatus de uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverApprovalUpdateException("No se pudo actualizar el estado de aprobación en Firestore", e);
+            throw new ExternalServiceException("No se pudo actualizar el estado de aprobación en Firestore", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al actualizar approvalStatus de uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverApprovalUpdateException("No se pudo actualizar el estado de aprobación en Firestore", e);
+            throw new ExternalServiceException("No se pudo actualizar el estado de aprobación en Firestore", e);
         }
 
         log.info("DriverAdminDebug | approvalStatus actualizado correctamente: uid={} -> status={}", uid, status);
@@ -377,7 +394,7 @@ public class DriverAdminService {
     // bloquea a un superuser, y un admin normal no puede bloquear a otro admin.
     public void updateBlockStatus(String uid, boolean blocked, String reason, String actorUid, boolean callerIsSuperUser) {
         if (blocked && (reason == null || reason.isBlank())) {
-            throw new MissingReasonException("Se requiere un motivo para bloquear al conductor");
+            throw new InvalidInputException("Se requiere un motivo para bloquear al conductor");
         }
 
         DocumentSnapshot snapshot;
@@ -386,19 +403,19 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al verificar uid={} antes de actualizar isBlocked: {}", uid, e.getMessage(), e);
-            throw new DriverBlockUpdateException("No se pudo verificar el conductor", e);
+            throw new ExternalServiceException("No se pudo verificar el conductor", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al verificar uid={} antes de actualizar isBlocked: {}", uid, e.getMessage(), e);
-            throw new DriverBlockUpdateException("No se pudo verificar el conductor", e);
+            throw new ExternalServiceException("No se pudo verificar el conductor", e);
         }
         if (!snapshot.exists()) {
-            throw new DriverNotFoundException(uid);
+            throw driverNotFound(uid);
         }
 
         Map<String, Object> data = snapshot.getData();
         String approvalStatus = data == null ? "approved" : data.getOrDefault("approvalStatus", "approved").toString();
         if (blocked && !"approved".equals(approvalStatus)) {
-            throw new DriverNotApprovedException(uid);
+            throw new ConflictException("El conductor " + uid + " no está aprobado, no se puede bloquear");
         }
 
         // Se aplica tanto al bloquear como al desbloquear -- por defensa en
@@ -423,10 +440,10 @@ public class DriverAdminService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("DriverAdminDebug | Interrumpido al actualizar isBlocked de uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverBlockUpdateException("No se pudo actualizar el estado de bloqueo en Firestore", e);
+            throw new ExternalServiceException("No se pudo actualizar el estado de bloqueo en Firestore", e);
         } catch (ExecutionException e) {
             log.error("DriverAdminDebug | Error al actualizar isBlocked de uid={}: {}", uid, e.getMessage(), e);
-            throw new DriverBlockUpdateException("No se pudo actualizar el estado de bloqueo en Firestore", e);
+            throw new ExternalServiceException("No se pudo actualizar el estado de bloqueo en Firestore", e);
         }
 
         log.info("DriverAdminDebug | isBlocked actualizado correctamente: uid={} -> blocked={}", uid, blocked);

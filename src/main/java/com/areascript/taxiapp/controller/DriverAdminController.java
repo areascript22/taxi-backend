@@ -1,20 +1,10 @@
 package com.areascript.taxiapp.controller;
+
+import com.areascript.taxiapp.common.config.TaxiappProperties;
 import com.areascript.taxiapp.dto.DriverDTO;
 import com.areascript.taxiapp.dto.DriverPageDTO;
 import com.areascript.taxiapp.security.FirebaseSecurityUtils;
 import com.areascript.taxiapp.service.DriverAdminService;
-import com.areascript.taxiapp.service.DriverApprovalUpdateException;
-import com.areascript.taxiapp.service.DriverBlockUpdateException;
-import com.areascript.taxiapp.service.DriverDeletionException;
-import com.areascript.taxiapp.service.DriverListException;
-import com.areascript.taxiapp.service.DriverModerationException;
-import com.areascript.taxiapp.service.DriverNotApprovedException;
-import com.areascript.taxiapp.service.DriverNotFoundException;
-import com.areascript.taxiapp.service.DriverRoleUpdateException;
-import com.areascript.taxiapp.service.InvalidApprovalStatusException;
-import com.areascript.taxiapp.service.InvalidRoleException;
-import com.areascript.taxiapp.service.MissingReasonException;
-import com.areascript.taxiapp.service.RoleHierarchyViolationException;
 import com.google.firebase.auth.FirebaseToken;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
@@ -28,17 +18,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+// Los errores de negocio (404 conductor inexistente, 403 jerarquía de roles,
+// 400 datos inválidos, 409 conductor no aprobado, 500 Firebase) los traduce
+// GlobalExceptionHandler. El chequeo de admin/superuser de cada endpoint se
+// mueve a Spring Security en la fase 2 del refactor.
 @RestController
 @RequestMapping("/api/drivers")
 public class DriverAdminController {
 
-    private static final String SUPER_ADMIN_UID = "AhsQJcGg49UQkLWiuy6trG0BWzq1";
-    private static final String SUPER_ADMIN_EMAIL = "jluisgg2002@gmail.com";
-
     private final DriverAdminService driverAdminService;
+    private final TaxiappProperties.Admin adminSettings;
 
-    public DriverAdminController(DriverAdminService driverAdminService) {
+    public DriverAdminController(DriverAdminService driverAdminService, TaxiappProperties properties) {
         this.driverAdminService = driverAdminService;
+        this.adminSettings = properties.admin();
     }
 
     @DeleteMapping("/{uid}")
@@ -46,16 +39,8 @@ public class DriverAdminController {
         if (!FirebaseSecurityUtils.isAdmin(request)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        try {
-            driverAdminService.deleteDriver(uid, FirebaseSecurityUtils.isSuperUser(request));
-            return ResponseEntity.noContent().build();
-        } catch (DriverNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (RoleHierarchyViolationException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (DriverDeletionException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        driverAdminService.deleteDriver(uid, FirebaseSecurityUtils.isSuperUser(request));
+        return ResponseEntity.noContent().build();
     }
 
     // Sin pageSize: fetch completo (lo usa el buscador del panel admin, que
@@ -70,14 +55,10 @@ public class DriverAdminController {
         if (!FirebaseSecurityUtils.isAdmin(request)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        try {
-            DriverPageDTO page = pageSize != null
-                    ? driverAdminService.listDriversPage(pageSize, cursor)
-                    : driverAdminService.listAllDrivers();
-            return ResponseEntity.ok(page);
-        } catch (DriverListException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        DriverPageDTO page = pageSize != null
+                ? driverAdminService.listDriversPage(pageSize, cursor)
+                : driverAdminService.listAllDrivers();
+        return ResponseEntity.ok(page);
     }
 
     // Refresco puntual de un conductor -- lo usa la app al volver de la
@@ -88,36 +69,22 @@ public class DriverAdminController {
         if (!FirebaseSecurityUtils.isAdmin(request)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        try {
-            return ResponseEntity.ok(driverAdminService.getDriver(uid));
-        } catch (DriverNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (DriverListException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        return ResponseEntity.ok(driverAdminService.getDriver(uid));
     }
 
+    // Cambiar roles exige superuser (o ser el fundador del proyecto, aunque
+    // todavía no tenga el claim).
     @PutMapping("/{uid}/role")
     public ResponseEntity<Void> updateDriverRole(
             @PathVariable String uid,
             @RequestBody UpdateDriverRoleRequest body,
             HttpServletRequest request
     ) {
-        if (!isSuperAdmin(request) && !FirebaseSecurityUtils.isSuperUser(request)) {
+        if (!isFounder(request) && !FirebaseSecurityUtils.isSuperUser(request)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        try {
-            driverAdminService.updateDriverRole(uid, body.role());
-            return ResponseEntity.noContent().build();
-        } catch (DriverNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (InvalidRoleException e) {
-            return ResponseEntity.badRequest().build();
-        } catch (RoleHierarchyViolationException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (DriverRoleUpdateException | DriverModerationException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        driverAdminService.updateDriverRole(uid, body.role());
+        return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/{uid}/approval-status")
@@ -131,24 +98,14 @@ public class DriverAdminController {
         }
         FirebaseToken token = FirebaseSecurityUtils.getToken(request);
         String actorUid = token != null ? token.getUid() : null;
-        try {
-            driverAdminService.updateApprovalStatus(
-                    uid,
-                    body.status(),
-                    body.reason(),
-                    actorUid,
-                    FirebaseSecurityUtils.isSuperUser(request)
-            );
-            return ResponseEntity.noContent().build();
-        } catch (DriverNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (InvalidApprovalStatusException | MissingReasonException e) {
-            return ResponseEntity.badRequest().build();
-        } catch (RoleHierarchyViolationException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (DriverApprovalUpdateException | DriverModerationException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        driverAdminService.updateApprovalStatus(
+                uid,
+                body.status(),
+                body.reason(),
+                actorUid,
+                FirebaseSecurityUtils.isSuperUser(request)
+        );
+        return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/{uid}/block-status")
@@ -162,32 +119,18 @@ public class DriverAdminController {
         }
         FirebaseToken token = FirebaseSecurityUtils.getToken(request);
         String actorUid = token != null ? token.getUid() : null;
-        try {
-            driverAdminService.updateBlockStatus(
-                    uid,
-                    body.blocked(),
-                    body.reason(),
-                    actorUid,
-                    FirebaseSecurityUtils.isSuperUser(request)
-            );
-            return ResponseEntity.noContent().build();
-        } catch (DriverNotFoundException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (MissingReasonException e) {
-            return ResponseEntity.badRequest().build();
-        } catch (DriverNotApprovedException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        } catch (RoleHierarchyViolationException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        } catch (DriverBlockUpdateException | DriverModerationException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
-        }
+        driverAdminService.updateBlockStatus(
+                uid,
+                body.blocked(),
+                body.reason(),
+                actorUid,
+                FirebaseSecurityUtils.isSuperUser(request)
+        );
+        return ResponseEntity.noContent().build();
     }
 
-    private boolean isSuperAdmin(HttpServletRequest request) {
+    private boolean isFounder(HttpServletRequest request) {
         FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        return token != null
-                && SUPER_ADMIN_UID.equals(token.getUid())
-                && SUPER_ADMIN_EMAIL.equalsIgnoreCase(token.getEmail());
+        return token != null && adminSettings.isFounder(token.getUid(), token.getEmail());
     }
 }

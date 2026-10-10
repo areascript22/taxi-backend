@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.config;
+package com.areascript.taxiapp.common.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,9 +8,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 public class SchedulingConfig {
 
     // Usado por RideService para agendar la auto-cancelación de solicitudes
-    // 'pending' (ver PENDING_REQUEST_EXPIRY_SECONDS): un pool chico alcanza
-    // porque cada tarea agendada solo corre una transacción corta sobre
-    // Realtime Database y termina.
+    // 'pending' (ver taxiapp.rides.pending-request-expiry): un pool chico
+    // alcanza porque cada tarea agendada solo corre una transacción corta
+    // sobre Realtime Database y termina.
     //
     // Necesario declararlo a mano: en este stack (Spring Boot 4.0.8 /
     // Framework 7.0.9) TaskSchedulingAutoConfiguration no registra un
