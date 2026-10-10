@@ -62,6 +62,16 @@ class ArchitectureRulesTest {
         rule.check(classes);
     }
 
+    // Ya se cumple desde la fase 2 y no debe retroceder: el token de Firebase
+    // lo lee solo common.security, que lo convierte en AuthenticatedUser.
+    // Controllers y services trabajan con la identidad ya resuelta.
+    @Test
+    void el_token_de_firebase_solo_se_usa_en_common_security() {
+        ArchRule rule = noClasses().that().resideOutsideOfPackage("..common.security..")
+                .should().dependOnClassesThat().haveFullyQualifiedName("com.google.firebase.auth.FirebaseToken");
+        rule.check(classes);
+    }
+
     // Ya se cumple hoy y no debe retroceder: ningún controller lee o escribe
     // directo en Realtime Database ni en Firestore.
     @Test

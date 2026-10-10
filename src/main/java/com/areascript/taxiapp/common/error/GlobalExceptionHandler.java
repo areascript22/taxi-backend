@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
@@ -46,6 +47,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         }
 
         return ResponseEntity.status(status).body(ProblemDetail.forStatusAndDetail(status, detail));
+    }
+
+    // @PreAuthorize rechazó al usuario autenticado: 403. Sin este handler la
+    // excepción caería en el de abajo y respondería 500.
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ProblemDetail> handleAccessDenied(AccessDeniedException exception) {
+        log.debug("ErrorDebug | Acceso denegado: {}", exception.getMessage());
+        HttpStatus status = HttpStatus.FORBIDDEN;
+        return ResponseEntity.status(status)
+                .body(ProblemDetail.forStatusAndDetail(status, "No tienes permisos para realizar esta operación"));
     }
 
     // Red de seguridad: cualquier excepción no prevista (un bug) sigue

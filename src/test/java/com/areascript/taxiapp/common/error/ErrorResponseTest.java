@@ -2,6 +2,7 @@ package com.areascript.taxiapp.common.error;
 
 import com.areascript.taxiapp.characterization.support.CharacterizationTestBase;
 import com.google.firebase.database.DatabaseError;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
@@ -18,6 +19,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ErrorResponseTest extends CharacterizationTestBase {
 
     private static final String DRIVER_LOCATION = "{\"latitude\": -1.67, \"longitude\": -78.65}";
+
+    // Para que aceptar llegue hasta el estado de la carrera, el conductor tiene
+    // que estar habilitado (aprobado y no bloqueado).
+    @BeforeEach
+    void approvedDriver() {
+        driverProfile("d1", null, "fcm-d1", "es");
+    }
 
     @Test
     void un_error_de_negocio_responde_problem_detail_con_el_motivo() throws Exception {

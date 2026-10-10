@@ -283,24 +283,62 @@ public class RideService {
             String vehicleModel,
             String vehicleColor
     ) {
-        private static final DriverVehicleInfo EMPTY =
-                new DriverVehicleInfo(null, null, null, null, null);
     }
 
-    private DriverVehicleInfo fetchDriverVehicleInfo(String driverUid) {
+    // Quién puede aceptar carreras: un conductor registrado (existe
+    // drivers/{uid}), aprobado y no bloqueado. Antes bastaba con tener un
+    // token válido: un pasajero, o un conductor bloqueado o pendiente de
+    // aprobación, podía llamar al endpoint y quedarse con la carrera.
+    //
+    // Falla cerrado: si Firestore no responde NO se asigna (se responde 500),
+    // porque no se puede comprobar que el conductor esté habilitado.
+    //
+    // Un documento sin approvalStatus/isBlocked es un conductor anterior al
+    // sistema de aprobación y cuenta como aprobado y no bloqueado (mismo
+    // criterio que DriverAdminService y ApprovalStatusBackfill).
+    private DocumentSnapshot loadDriverAllowedToAccept(String driverUid) {
+        DocumentSnapshot driverSnapshot;
         try {
-            DocumentSnapshot driverSnapshot =
-                    firestore.collection(DRIVERS_COLLECTION).document(driverUid).get().get(timeoutMillis, TimeUnit.MILLISECONDS);
-            if (!driverSnapshot.exists() || driverSnapshot.getData() == null) {
-                return DriverVehicleInfo.EMPTY;
-            }
+            driverSnapshot = firestore.collection(DRIVERS_COLLECTION).document(driverUid).get()
+                    .get(timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("RideDebug | Interrumpido al verificar al conductor driverUid={}: {}", driverUid, e.getMessage(), e);
+            throw new ExternalServiceException("No se pudo verificar al conductor", e);
+        } catch (ExecutionException | TimeoutException e) {
+            log.error("RideDebug | Error al verificar al conductor driverUid={}: {}", driverUid, e.getMessage(), e);
+            throw new ExternalServiceException("No se pudo verificar al conductor", e);
+        }
 
-            String phoneNumber = driverSnapshot.getString("phoneNumber");
-            String vehicleId = driverSnapshot.getString("vehicleId");
-            if (vehicleId == null || vehicleId.isBlank()) {
-                return new DriverVehicleInfo(phoneNumber, null, null, null, null);
-            }
+        if (!driverSnapshot.exists() || driverSnapshot.getData() == null) {
+            log.warn("RideDebug | uid={} intentó aceptar una carrera sin ser un conductor registrado", driverUid);
+            throw new ForbiddenException("Solo un conductor registrado puede aceptar carreras");
+        }
 
+        Object approvalStatus = driverSnapshot.getData().getOrDefault("approvalStatus", "approved");
+        if (!"approved".equals(approvalStatus)) {
+            log.warn("RideDebug | driverUid={} intentó aceptar una carrera con approvalStatus={}", driverUid, approvalStatus);
+            throw new ForbiddenException("El conductor no está aprobado para aceptar carreras");
+        }
+
+        if (Boolean.TRUE.equals(driverSnapshot.getData().get("isBlocked"))) {
+            log.warn("RideDebug | driverUid={} está bloqueado e intentó aceptar una carrera", driverUid);
+            throw new ForbiddenException("El conductor está bloqueado y no puede aceptar carreras");
+        }
+
+        return driverSnapshot;
+    }
+
+    // Best-effort: el conductor ya fue validado, esto solo completa los datos
+    // que se le muestran al pasajero.
+    private DriverVehicleInfo fetchDriverVehicleInfo(DocumentSnapshot driverSnapshot) {
+        String phoneNumber = driverSnapshot.getString("phoneNumber");
+        String vehicleId = driverSnapshot.getString("vehicleId");
+        if (vehicleId == null || vehicleId.isBlank()) {
+            return new DriverVehicleInfo(phoneNumber, null, null, null, null);
+        }
+
+        try {
             DocumentSnapshot vehicleSnapshot =
                     firestore.collection(VEHICLES_COLLECTION).document(vehicleId).get().get(timeoutMillis, TimeUnit.MILLISECONDS);
             if (!vehicleSnapshot.exists() || vehicleSnapshot.getData() == null) {
@@ -316,11 +354,11 @@ public class RideService {
             );
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("RideDebug | Interrumpido al buscar teléfono/vehículo de driverUid={}: {}", driverUid, e.getMessage());
-            return DriverVehicleInfo.EMPTY;
+            log.warn("RideDebug | Interrumpido al buscar el vehículo de driverUid={}: {}", driverSnapshot.getId(), e.getMessage());
+            return new DriverVehicleInfo(phoneNumber, null, null, null, null);
         } catch (ExecutionException | TimeoutException e) {
-            log.warn("RideDebug | No se pudo buscar teléfono/vehículo de driverUid={}: {}", driverUid, e.getMessage());
-            return DriverVehicleInfo.EMPTY;
+            log.warn("RideDebug | No se pudo buscar el vehículo de driverUid={}: {}", driverSnapshot.getId(), e.getMessage());
+            return new DriverVehicleInfo(phoneNumber, null, null, null, null);
         }
     }
 
@@ -339,7 +377,9 @@ public class RideService {
     ) {
         DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
         CompletableFuture<RideTransactionOutcome> future = new CompletableFuture<>();
-        DriverVehicleInfo vehicleInfo = fetchDriverVehicleInfo(driverUid);
+        // Primero se autoriza al conductor, antes de tocar la carrera.
+        DocumentSnapshot driverSnapshot = loadDriverAllowedToAccept(driverUid);
+        DriverVehicleInfo vehicleInfo = fetchDriverVehicleInfo(driverSnapshot);
 
         rideRef.runTransaction(new Transaction.Handler() {
             @Override

@@ -1,14 +1,12 @@
 package com.areascript.taxiapp.controller;
 
-import com.areascript.taxiapp.common.config.TaxiappProperties;
+import com.areascript.taxiapp.common.security.AuthenticatedUser;
 import com.areascript.taxiapp.dto.DriverDTO;
 import com.areascript.taxiapp.dto.DriverPageDTO;
-import com.areascript.taxiapp.security.FirebaseSecurityUtils;
 import com.areascript.taxiapp.service.DriverAdminService;
-import com.google.firebase.auth.FirebaseToken;
-import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,28 +16,29 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+// Panel de administración. Todo el controller exige ROLE_ADMIN (claim "admin"
+// del token); cambiar roles es más estricto y lo declara cada método.
+//
 // Los errores de negocio (404 conductor inexistente, 403 jerarquía de roles,
 // 400 datos inválidos, 409 conductor no aprobado, 500 Firebase) los traduce
-// GlobalExceptionHandler. El chequeo de admin/superuser de cada endpoint se
-// mueve a Spring Security en la fase 2 del refactor.
+// GlobalExceptionHandler.
 @RestController
 @RequestMapping("/api/drivers")
+@PreAuthorize("hasRole('ADMIN')")
 public class DriverAdminController {
 
     private final DriverAdminService driverAdminService;
-    private final TaxiappProperties.Admin adminSettings;
 
-    public DriverAdminController(DriverAdminService driverAdminService, TaxiappProperties properties) {
+    public DriverAdminController(DriverAdminService driverAdminService) {
         this.driverAdminService = driverAdminService;
-        this.adminSettings = properties.admin();
     }
 
     @DeleteMapping("/{uid}")
-    public ResponseEntity<Void> deleteDriver(@PathVariable String uid, HttpServletRequest request) {
-        if (!FirebaseSecurityUtils.isAdmin(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        }
-        driverAdminService.deleteDriver(uid, FirebaseSecurityUtils.isSuperUser(request));
+    public ResponseEntity<Void> deleteDriver(
+            @PathVariable String uid,
+            @AuthenticationPrincipal AuthenticatedUser user
+    ) {
+        driverAdminService.deleteDriver(uid, user.superUser());
         return ResponseEntity.noContent().build();
     }
 
@@ -49,12 +48,8 @@ public class DriverAdminController {
     @GetMapping
     public ResponseEntity<DriverPageDTO> listDrivers(
             @RequestParam(required = false) Integer pageSize,
-            @RequestParam(required = false) String cursor,
-            HttpServletRequest request
+            @RequestParam(required = false) String cursor
     ) {
-        if (!FirebaseSecurityUtils.isAdmin(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        }
         DriverPageDTO page = pageSize != null
                 ? driverAdminService.listDriversPage(pageSize, cursor)
                 : driverAdminService.listAllDrivers();
@@ -65,24 +60,20 @@ public class DriverAdminController {
     // pantalla de detalle, para resincronizar ese registro sin recargar (y
     // perder la posición de) la lista paginada completa.
     @GetMapping("/{uid}")
-    public ResponseEntity<DriverDTO> getDriver(@PathVariable String uid, HttpServletRequest request) {
-        if (!FirebaseSecurityUtils.isAdmin(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        }
+    public ResponseEntity<DriverDTO> getDriver(@PathVariable String uid) {
         return ResponseEntity.ok(driverAdminService.getDriver(uid));
     }
 
-    // Cambiar roles exige superuser (o ser el fundador del proyecto, aunque
-    // todavía no tenga el claim).
+    // Cambiar roles exige superuser, o ser el fundador del proyecto aunque
+    // todavía no tenga el claim. El @PreAuthorize del método REEMPLAZA al de la
+    // clase (no se suma): por eso un fundador sin el claim "admin" llega acá,
+    // como antes de pasar a Spring Security.
     @PutMapping("/{uid}/role")
+    @PreAuthorize("hasAnyRole('FOUNDER', 'SUPERUSER')")
     public ResponseEntity<Void> updateDriverRole(
             @PathVariable String uid,
-            @RequestBody UpdateDriverRoleRequest body,
-            HttpServletRequest request
+            @RequestBody UpdateDriverRoleRequest body
     ) {
-        if (!isFounder(request) && !FirebaseSecurityUtils.isSuperUser(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        }
         driverAdminService.updateDriverRole(uid, body.role());
         return ResponseEntity.noContent().build();
     }
@@ -91,19 +82,14 @@ public class DriverAdminController {
     public ResponseEntity<Void> updateApprovalStatus(
             @PathVariable String uid,
             @RequestBody UpdateApprovalStatusRequest body,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        if (!FirebaseSecurityUtils.isAdmin(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        }
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        String actorUid = token != null ? token.getUid() : null;
         driverAdminService.updateApprovalStatus(
                 uid,
                 body.status(),
                 body.reason(),
-                actorUid,
-                FirebaseSecurityUtils.isSuperUser(request)
+                user.uid(),
+                user.superUser()
         );
         return ResponseEntity.noContent().build();
     }
@@ -112,25 +98,15 @@ public class DriverAdminController {
     public ResponseEntity<Void> updateBlockStatus(
             @PathVariable String uid,
             @RequestBody UpdateBlockStatusRequest body,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        if (!FirebaseSecurityUtils.isAdmin(request)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-        }
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        String actorUid = token != null ? token.getUid() : null;
         driverAdminService.updateBlockStatus(
                 uid,
                 body.blocked(),
                 body.reason(),
-                actorUid,
-                FirebaseSecurityUtils.isSuperUser(request)
+                user.uid(),
+                user.superUser()
         );
         return ResponseEntity.noContent().build();
-    }
-
-    private boolean isFounder(HttpServletRequest request) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        return token != null && adminSettings.isFounder(token.getUid(), token.getEmail());
     }
 }

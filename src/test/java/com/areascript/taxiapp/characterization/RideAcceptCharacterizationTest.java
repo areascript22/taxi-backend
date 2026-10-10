@@ -3,9 +3,11 @@ package com.areascript.taxiapp.characterization;
 import com.areascript.taxiapp.characterization.support.CharacterizationTestBase;
 import com.areascript.taxiapp.characterization.support.FakeRealtimeDatabase;
 import com.areascript.taxiapp.characterization.support.SentPush;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -14,13 +16,24 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // POST /api/rides/{passengerId}/accept: un conductor acepta una solicitud.
+//
+// Desde la fase 2 solo puede aceptar un conductor registrado, aprobado y no
+// bloqueado (antes bastaba con un token válido: ver los tests de autorización
+// al final). Por eso cada test parte de un conductor "d1" habilitado.
 class RideAcceptCharacterizationTest extends CharacterizationTestBase {
 
     private static final String DRIVER_LOCATION = "{\"latitude\": -1.67, \"longitude\": -78.65}";
 
+    @BeforeEach
+    void approvedDriver() {
+        driverProfile("d1", null, "fcm-d1", "es");
+    }
+
     private String driverToken() throws Exception {
         return token("d1", "d1@test.com", "Carlos Conductor", "https://foto/d1.jpg", Map.of());
     }
+
+    // ---- Camino feliz ----
 
     @Test
     void asigna_al_conductor_con_sus_datos_del_token_y_de_firestore() throws Exception {
@@ -108,7 +121,7 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
 
     // Teléfono y vehículo son datos complementarios: si faltan, se asigna igual.
     @Test
-    void asigna_igual_si_el_conductor_no_tiene_perfil_ni_vehiculo() throws Exception {
+    void asigna_igual_si_el_conductor_todavia_no_cargo_su_vehiculo() throws Exception {
         givenRide("p1", "pending", null);
 
         mvc.perform(post("/api/rides/p1/accept")
@@ -119,8 +132,8 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
 
         assertThat(rideField("p1", "status")).isEqualTo("driverAssigned");
         Map<String, Object> data = rtdb.getMap(RIDES + "/p1/driver/data");
-        assertThat(data).containsEntry("id", "d1")
-                .doesNotContainKeys("phoneNumber", "vehiclePlate", "vehicleBrand", "vehicleModel", "vehicleColor");
+        assertThat(data).containsEntry("id", "d1").containsEntry("phoneNumber", "0990000000")
+                .doesNotContainKeys("vehiclePlate", "vehicleBrand", "vehicleModel", "vehicleColor");
     }
 
     @Test
@@ -136,6 +149,8 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
 
         assertThat(sentPushes()).isEmpty();
     }
+
+    // ---- Estado de la carrera ----
 
     @Test
     void responde_409_si_ya_la_acepto_otro_conductor() throws Exception {
@@ -174,26 +189,103 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
         assertThat(rtdb.get(RIDES + "/p1")).isNull();
     }
 
-    // Bug conocido (se corrige en la fase de seguridad): no se verifica que
-    // quien acepta sea un conductor, ni que esté aprobado o no bloqueado.
-    // Cualquier usuario autenticado puede aceptar, incluso el propio pasajero.
     @Test
-    void bug_conocido_cualquier_usuario_autenticado_puede_aceptar() throws Exception {
+    void sin_token_responde_401() throws Exception {
         givenRide("p1", "pending", null);
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isUnauthorized());
+
+        assertThat(rideField("p1", "status")).isEqualTo("pending");
+    }
+
+    // ---- Quién puede aceptar (fase 2: antes era un bug congelado) ----
+
+    private void assertNotAssigned() throws Exception {
+        assertThat(rideField("p1", "status")).isEqualTo("pending");
+        assertThat(rideField("p1", "driver")).isNull();
+        assertThat(sentPushes()).isEmpty();
+        assertThat(firestore.documentIds("chats")).isEmpty();
+    }
+
+    // El propio pasajero no tiene documento en drivers/: no es un conductor.
+    @Test
+    void un_pasajero_no_puede_aceptar_una_carrera() throws Exception {
+        givenRide("p1", "pending", null);
+        passengerProfile("p1", "fcm-p1", "es");
 
         mvc.perform(post("/api/rides/p1/accept")
                         .header("Authorization", userToken("p1"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(DRIVER_LOCATION))
-                .andExpect(status().isNoContent());
+                .andExpect(status().isForbidden());
 
-        assertThat(rideField("p1", "driver/data/id")).isEqualTo("p1");
+        assertNotAssigned();
     }
 
     @Test
-    void bug_conocido_un_conductor_bloqueado_puede_aceptar() throws Exception {
+    void un_usuario_sin_documento_de_conductor_recibe_403() throws Exception {
+        givenRide("p1", "pending", null);
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", userToken("nadie"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isForbidden());
+
+        assertNotAssigned();
+    }
+
+    @Test
+    void un_conductor_bloqueado_recibe_403() throws Exception {
         givenRide("p1", "pending", null);
         firestore.put("drivers/d1", Map.of("isBlocked", true, "approvalStatus", "approved"));
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isForbidden());
+
+        assertNotAssigned();
+    }
+
+    @Test
+    void un_conductor_pendiente_de_aprobacion_recibe_403() throws Exception {
+        givenRide("p1", "pending", null);
+        firestore.put("drivers/d1", Map.of("approvalStatus", "pending"));
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isForbidden());
+
+        assertNotAssigned();
+    }
+
+    @Test
+    void un_conductor_rechazado_recibe_403() throws Exception {
+        givenRide("p1", "pending", null);
+        firestore.put("drivers/d1", Map.of("approvalStatus", "rejected"));
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isForbidden());
+
+        assertNotAssigned();
+    }
+
+    // Conductores creados antes del sistema de aprobación no tienen
+    // approvalStatus ni isBlocked: cuentan como aprobados y no bloqueados.
+    @Test
+    void un_conductor_anterior_al_sistema_de_aprobacion_puede_aceptar() throws Exception {
+        givenRide("p1", "pending", null);
+        firestore.put("drivers/d1", new HashMap<>(Map.of("phoneNumber", "0990000000")));
 
         mvc.perform(post("/api/rides/p1/accept")
                         .header("Authorization", driverToken())
@@ -205,14 +297,40 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
     }
 
     @Test
-    void sin_token_responde_401() throws Exception {
+    void un_conductor_desbloqueado_puede_aceptar() throws Exception {
         givenRide("p1", "pending", null);
+        firestore.put("drivers/d1", Map.of("isBlocked", false, "approvalStatus", "approved"));
 
         mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(DRIVER_LOCATION))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isNoContent());
+    }
 
-        assertThat(rideField("p1", "status")).isEqualTo("pending");
+    // Falla cerrado: sin poder verificar al conductor, no se asigna.
+    @Test
+    void si_firestore_falla_al_verificar_no_se_asigna_y_responde_500() throws Exception {
+        givenRide("p1", "pending", null);
+        firestore.failReadsOf("drivers/d1", new RuntimeException("firestore caído"));
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isInternalServerError());
+
+        assertNotAssigned();
+    }
+
+    // La autorización va antes que mirar la carrera: un no-conductor no se
+    // entera de si la solicitud existe.
+    @Test
+    void un_no_conductor_recibe_403_aunque_la_solicitud_no_exista() throws Exception {
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", userToken("nadie"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isForbidden());
     }
 }

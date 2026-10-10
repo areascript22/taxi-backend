@@ -1,11 +1,9 @@
 package com.areascript.taxiapp.controller;
 
-import com.areascript.taxiapp.security.FirebaseSecurityUtils;
+import com.areascript.taxiapp.common.security.AuthenticatedUser;
 import com.areascript.taxiapp.service.AccountService;
-import com.google.firebase.auth.FirebaseToken;
-import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -26,13 +24,8 @@ public class AccountController {
     // 409 si tiene un viaje activo y 500 si falla Firebase: los traduce
     // GlobalExceptionHandler.
     @DeleteMapping
-    public ResponseEntity<Void> deleteOwnAccount(HttpServletRequest request) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        accountService.deleteOwnAccount(token.getUid());
+    public ResponseEntity<Void> deleteOwnAccount(@AuthenticationPrincipal AuthenticatedUser user) {
+        accountService.deleteOwnAccount(user.uid());
         return ResponseEntity.noContent().build();
     }
 }

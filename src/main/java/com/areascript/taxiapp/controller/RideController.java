@@ -1,15 +1,13 @@
 package com.areascript.taxiapp.controller;
 
 import com.areascript.taxiapp.common.error.InvalidInputException;
+import com.areascript.taxiapp.common.security.AuthenticatedUser;
 import com.areascript.taxiapp.dto.AcceptRideRequest;
 import com.areascript.taxiapp.dto.RequestRideRequest;
 import com.areascript.taxiapp.dto.SendChatMessageRequest;
-import com.areascript.taxiapp.security.FirebaseSecurityUtils;
 import com.areascript.taxiapp.service.RideService;
-import com.google.firebase.auth.FirebaseToken;
-import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,9 +17,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 
-// Los errores de negocio (404 sin solicitud, 409 carrera ya tomada, 403 no
-// participante, 500 Firebase) los traduce GlobalExceptionHandler a partir de
-// la excepción que lanza RideService: acá solo queda el camino feliz.
+// La identidad llega del token ya verificado (@AuthenticationPrincipal): el
+// cliente nunca dice quién es. Los errores de negocio (404 sin solicitud, 409
+// carrera ya tomada, 403 no participante, 500 Firebase) los traduce
+// GlobalExceptionHandler a partir de la excepción que lanza RideService.
+//
+// No hay @PreAuthorize acá porque ningún endpoint exige un rol del token:
+// "quién puede aceptar" (un conductor aprobado y no bloqueado) vive en
+// RideService, porque depende del documento del conductor en Firestore y no
+// de los claims del token.
 @RestController
 @RequestMapping("/api/rides")
 public class RideController {
@@ -39,17 +43,12 @@ public class RideController {
     @PostMapping("/request")
     public ResponseEntity<Void> requestRide(
             @RequestBody RequestRideRequest body,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
         rideService.requestRide(
-                token.getUid(),
-                token.getName(),
-                token.getPicture(),
+                user.uid(),
+                user.name(),
+                user.picture(),
                 body.latitude(),
                 body.longitude(),
                 body.address(),
@@ -62,19 +61,14 @@ public class RideController {
     public ResponseEntity<Void> acceptRide(
             @PathVariable String passengerId,
             @RequestBody AcceptRideRequest body,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
         rideService.acceptRide(
                 passengerId,
-                token.getUid(),
-                token.getEmail(),
-                token.getName(),
-                token.getPicture(),
+                user.uid(),
+                user.email(),
+                user.name(),
+                user.picture(),
                 body.latitude(),
                 body.longitude()
         );
@@ -90,14 +84,9 @@ public class RideController {
     @PostMapping("/{passengerId}/cancel")
     public ResponseEntity<Void> cancelRide(
             @PathVariable String passengerId,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        rideService.cancelRide(passengerId, token.getUid());
+        rideService.cancelRide(passengerId, user.uid());
         return ResponseEntity.noContent().build();
     }
 
@@ -106,14 +95,9 @@ public class RideController {
     @PostMapping("/{passengerId}/complete")
     public ResponseEntity<Void> completeTrip(
             @PathVariable String passengerId,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        rideService.completeTrip(passengerId, token.getUid());
+        rideService.completeTrip(passengerId, user.uid());
         return ResponseEntity.noContent().build();
     }
 
@@ -125,17 +109,13 @@ public class RideController {
     public ResponseEntity<Void> sendChatMessage(
             @PathVariable String passengerId,
             @RequestBody SendChatMessageRequest body,
-            HttpServletRequest request
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
         if (body.text() == null || body.text().isBlank()) {
             throw new InvalidInputException("El mensaje no puede estar vacío");
         }
 
-        rideService.sendChatMessage(passengerId, token.getUid(), body.text());
+        rideService.sendChatMessage(passengerId, user.uid(), body.text());
         return ResponseEntity.noContent().build();
     }
 
@@ -144,13 +124,10 @@ public class RideController {
     // resumir en RideTrackingScreen. El passengerId sale del token, nunca
     // del cliente.
     @GetMapping("/passenger/active")
-    public ResponseEntity<Map<String, Object>> getActivePassengerRide(HttpServletRequest request) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        Map<String, Object> ride = rideService.findActiveRideForPassenger(token.getUid());
+    public ResponseEntity<Map<String, Object>> getActivePassengerRide(
+            @AuthenticationPrincipal AuthenticatedUser user
+    ) {
+        Map<String, Object> ride = rideService.findActiveRideForPassenger(user.uid());
         return ride == null
                 ? ResponseEntity.noContent().build()
                 : ResponseEntity.ok(ride);
@@ -160,13 +137,10 @@ public class RideController {
     // client-side al reabrir la app, para decidir si debe resumir en
     // TripScreen. El driverUid sale del token, nunca del cliente.
     @GetMapping("/driver/active")
-    public ResponseEntity<Map<String, Object>> getActiveDriverRide(HttpServletRequest request) {
-        FirebaseToken token = FirebaseSecurityUtils.getToken(request);
-        if (token == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-
-        Map<String, Object> ride = rideService.findActiveRideForDriver(token.getUid());
+    public ResponseEntity<Map<String, Object>> getActiveDriverRide(
+            @AuthenticationPrincipal AuthenticatedUser user
+    ) {
+        Map<String, Object> ride = rideService.findActiveRideForDriver(user.uid());
         return ride == null
                 ? ResponseEntity.noContent().build()
                 : ResponseEntity.ok(ride);
