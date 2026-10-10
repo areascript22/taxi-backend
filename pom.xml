@@ -41,6 +41,16 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- Reglas de arquitectura como tests (ver ArchitectureRulesTest).
+		     Se usa la librería base y no archunit-junit5: las reglas corren
+		     como @Test normales y no dependen del engine de JUnit. -->
+		<dependency>
+			<groupId>com.tngtech.archunit</groupId>
+			<artifactId>archunit</artifactId>
+			<version>1.4.1</version>
+			<scope>test</scope>
+		</dependency>
+
 		<dependency>
 			<groupId>com.google.firebase</groupId>
 			<artifactId>firebase-admin</artifactId>
