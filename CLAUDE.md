@@ -59,6 +59,9 @@ atómica y puede reejecutarla, así que **no puede tener efectos secundarios**.
 ### Identidad y seguridad
 - La identidad sale **siempre** del token: `@AuthenticationPrincipal
   AuthenticatedUser`. Nunca de un campo del body, un header o un path.
+- Lo que la persona PUEDE hacer sale de la base (`users.role_code`), no de los
+  claims del token. Para cambiar un rol: `UserAccounts.setRole` (además de los
+  claims y Firestore mientras dure la transición).
 - El acceso por rol se declara con `@PreAuthorize`. Un `@PreAuthorize` de método
   **reemplaza** al de la clase (no se suma).
 - Los permisos que dependen de datos (¿es conductor aprobado?, ¿es parte del

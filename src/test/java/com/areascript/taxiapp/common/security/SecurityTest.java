@@ -1,6 +1,7 @@
 package com.areascript.taxiapp.common.security;
 
 import com.areascript.taxiapp.characterization.support.CharacterizationTestBase;
+import com.areascript.taxiapp.user.domain.UserRole;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
@@ -65,13 +66,25 @@ class SecurityTest extends CharacterizationTestBase {
                 .andExpect(jsonPath("$.status").value(403));
     }
 
-    // Ser superuser sin el claim "admin" no abre el resto del panel, igual que
-    // antes: solo los endpoints que lo declaran.
+    // El rol guardado en la base decide, no los claims del token. Un superuser
+    // incluye al admin (antes eran dos claims independientes, pero nadie era
+    // superuser sin ser admin: el arranque y el endpoint de roles siempre los
+    // asignaban juntos).
     @Test
-    void el_claim_admin_es_el_que_abre_el_panel() throws Exception {
-        String superuserWithoutAdmin = token("s1", "s1@test.com", "Super", null, Map.of("superuser", true));
+    void el_rol_superuser_guardado_en_la_base_abre_el_panel() throws Exception {
+        String token = token("s1", "s1@test.com", "Super", null, Map.of("superuser", true));
 
-        mvc.perform(get("/api/drivers").header("Authorization", superuserWithoutAdmin))
+        mvc.perform(get("/api/drivers").header("Authorization", token))
+                .andExpect(status().isOk());
+    }
+
+    // Y un claim de admin que la base no respalda no abre nada.
+    @Test
+    void un_claim_de_admin_que_la_base_no_respalda_no_abre_el_panel() throws Exception {
+        String token = adminToken("a1");
+        users.seed("a1", "a1@test.com", "Admin", UserRole.USER);
+
+        mvc.perform(get("/api/drivers").header("Authorization", token))
                 .andExpect(status().isForbidden());
     }
 

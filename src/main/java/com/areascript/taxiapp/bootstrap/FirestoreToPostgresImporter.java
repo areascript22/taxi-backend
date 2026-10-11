@@ -1,9 +1,9 @@
 package com.areascript.taxiapp.bootstrap;
 
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
-import com.areascript.taxiapp.driveradmin.infra.DriverRowRepository;
-import com.areascript.taxiapp.driveradmin.infra.VehicleRowRepository;
-import com.areascript.taxiapp.passenger.infra.PassengerRowRepository;
+import com.areascript.taxiapp.user.infra.DriverRowRepository;
+import com.areascript.taxiapp.user.infra.VehicleRowRepository;
+import com.areascript.taxiapp.user.infra.PassengerRowRepository;
 import com.areascript.taxiapp.user.infra.UserRowRepository;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QueryDocumentSnapshot;

@@ -5,6 +5,8 @@ import com.areascript.taxiapp.driveradmin.domain.DriverRepository;
 import com.areascript.taxiapp.driveradmin.domain.DriverRole;
 import com.areascript.taxiapp.identity.domain.AccountRoles;
 import com.areascript.taxiapp.identity.domain.IdentityProvider;
+import com.areascript.taxiapp.user.domain.UserAccounts;
+import com.areascript.taxiapp.user.domain.UserRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -27,15 +29,18 @@ public class FounderBootstrapService {
 
     private final IdentityProvider identityProvider;
     private final DriverRepository drivers;
+    private final UserAccounts userAccounts;
     private final TaxiappProperties.Admin adminSettings;
 
     public FounderBootstrapService(
             IdentityProvider identityProvider,
             DriverRepository drivers,
+            UserAccounts userAccounts,
             TaxiappProperties properties
     ) {
         this.identityProvider = identityProvider;
         this.drivers = drivers;
+        this.userAccounts = userAccounts;
         this.adminSettings = properties.admin();
     }
 
@@ -79,6 +84,14 @@ public class FounderBootstrapService {
             drivers.ensureRole(founderUid, DriverRole.SUPERUSER);
         } catch (RuntimeException e) {
             log.error("SuperUserBootstrapDebug | Error al sincronizar role=superuser para uid={}: {}", founderUid, e.getMessage(), e);
+        }
+
+        // Y en la base de usuarios, que es la que decide los permisos en cada
+        // request. Idempotente, igual que el paso anterior.
+        try {
+            userAccounts.setRole(founderUid, UserRole.SUPERUSER);
+        } catch (RuntimeException e) {
+            log.error("SuperUserBootstrapDebug | Error al sincronizar el rol superuser en la base para uid={}: {}", founderUid, e.getMessage(), e);
         }
     }
 }

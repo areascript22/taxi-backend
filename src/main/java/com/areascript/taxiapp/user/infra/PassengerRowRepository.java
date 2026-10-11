@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.passenger.infra;
+package com.areascript.taxiapp.user.infra;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 

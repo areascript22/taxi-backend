@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.passenger.infra;
+package com.areascript.taxiapp.user.infra;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

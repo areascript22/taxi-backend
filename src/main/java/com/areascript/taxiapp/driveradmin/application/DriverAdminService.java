@@ -15,6 +15,8 @@ import com.areascript.taxiapp.driveradmin.domain.DriverRole;
 import com.areascript.taxiapp.driveradmin.domain.ModerationPolicy;
 import com.areascript.taxiapp.identity.domain.AccountRoles;
 import com.areascript.taxiapp.identity.domain.IdentityProvider;
+import com.areascript.taxiapp.user.domain.UserAccounts;
+import com.areascript.taxiapp.user.domain.UserRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -34,17 +36,20 @@ public class DriverAdminService {
     private final DriverRepository drivers;
     private final IdentityProvider identityProvider;
     private final UserDataCleaner dataCleaner;
+    private final UserAccounts userAccounts;
     private final TaxiappProperties.Admin adminSettings;
 
     public DriverAdminService(
             DriverRepository drivers,
             IdentityProvider identityProvider,
             UserDataCleaner dataCleaner,
+            UserAccounts userAccounts,
             TaxiappProperties properties
     ) {
         this.drivers = drivers;
         this.identityProvider = identityProvider;
         this.dataCleaner = dataCleaner;
+        this.userAccounts = userAccounts;
         this.adminSettings = properties.admin();
     }
 
@@ -59,6 +64,8 @@ public class DriverAdminService {
         // Limpieza completa (doc del conductor, vehículo asociado, foto en
         // Storage y chats). Compartida con la autoeliminación de cuenta.
         dataCleaner.wipe(uid);
+        // La persona y, en cascada, sus perfiles y vehículos en Postgres.
+        userAccounts.remove(uid);
 
         log.info("DriverAdminDebug | Driver uid={} eliminado correctamente de Firebase Auth y limpiado por completo", uid);
     }
@@ -111,6 +118,16 @@ public class DriverAdminService {
             // Los claims ya cambiaron pero el campo no: queda desalineado hasta
             // que se repita la operación. Se deja constancia para diagnosticarlo.
             log.error("DriverAdminDebug | El custom claim de uid={} se actualizó pero falló el campo 'role'", uid);
+            throw e;
+        }
+
+        // El rol que manda en cada request es el de la base: si este paso
+        // falla, los claims y Firestore ya cambiaron pero los permisos reales
+        // no. Se repite la operación para corregirlo (es idempotente).
+        try {
+            userAccounts.setRole(uid, newRole == DriverRole.ADMIN ? UserRole.ADMIN : UserRole.USER);
+        } catch (ExternalServiceException e) {
+            log.error("DriverAdminDebug | El rol de uid={} cambió en Firebase pero falló en la base de usuarios", uid);
             throw e;
         }
 

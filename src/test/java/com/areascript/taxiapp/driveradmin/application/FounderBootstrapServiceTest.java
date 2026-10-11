@@ -9,6 +9,9 @@ import com.areascript.taxiapp.driveradmin.domain.DriverRole;
 import com.areascript.taxiapp.driveradmin.domain.Driver;
 import com.areascript.taxiapp.identity.domain.AccountRoles;
 import com.areascript.taxiapp.identity.domain.IdentityProvider;
+import com.areascript.taxiapp.user.domain.UserAccount;
+import com.areascript.taxiapp.user.domain.UserAccounts;
+import com.areascript.taxiapp.user.domain.UserRole;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -93,10 +96,34 @@ class FounderBootstrapServiceTest {
         }
     };
 
+    // La base de usuarios, que es la que decide los permisos en cada request.
+    private final List<String> userRoleCalls = new ArrayList<>();
+    private RuntimeException userRoleFailure;
+
+    private final UserAccounts userAccounts = new UserAccounts() {
+        @Override
+        public UserAccount findOrProvision(String firebaseUid, String email, String displayName) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void setRole(String firebaseUid, UserRole role) {
+            if (userRoleFailure != null) {
+                throw userRoleFailure;
+            }
+            userRoleCalls.add(firebaseUid + " " + role.code());
+        }
+
+        @Override
+        public void remove(String firebaseUid) {
+            throw new UnsupportedOperationException();
+        }
+    };
+
     private FounderBootstrapService service(String founderUid) {
         TaxiappProperties properties = new TaxiappProperties(
                 RIDES, CHAT, new TaxiappProperties.Admin(founderUid, "founder@test.com"));
-        return new FounderBootstrapService(identity, drivers, properties);
+        return new FounderBootstrapService(identity, drivers, userAccounts, properties);
     }
 
     @Test
@@ -151,6 +178,24 @@ class FounderBootstrapServiceTest {
     void un_fallo_al_sincronizar_el_rol_no_se_propaga() {
         accountRoles = Optional.of(new AccountRoles(true, true));
         ensureRoleFailure = new ExternalServiceException("firestore caído", new RuntimeException());
+
+        assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
+    }
+
+    // El rol que manda en cada request es el de la base de usuarios.
+    @Test
+    void el_fundador_queda_como_superuser_en_la_base_de_usuarios() {
+        accountRoles = Optional.of(AccountRoles.NONE);
+
+        service("f1").ensureFounderIsSuperUser();
+
+        assertThat(userRoleCalls).containsExactly("f1 superuser");
+    }
+
+    @Test
+    void un_fallo_al_guardar_el_rol_en_la_base_no_se_propaga() {
+        accountRoles = Optional.of(new AccountRoles(true, true));
+        userRoleFailure = new ExternalServiceException("postgres caído", new RuntimeException());
 
         assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
     }

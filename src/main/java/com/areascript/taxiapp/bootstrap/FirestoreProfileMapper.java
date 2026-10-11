@@ -2,9 +2,9 @@ package com.areascript.taxiapp.bootstrap;
 
 import com.areascript.taxiapp.driveradmin.domain.ApprovalStatus;
 import com.areascript.taxiapp.driveradmin.domain.DriverRole;
-import com.areascript.taxiapp.driveradmin.infra.DriverRow;
-import com.areascript.taxiapp.driveradmin.infra.VehicleRow;
-import com.areascript.taxiapp.passenger.infra.PassengerRow;
+import com.areascript.taxiapp.user.infra.DriverRow;
+import com.areascript.taxiapp.user.infra.VehicleRow;
+import com.areascript.taxiapp.user.infra.PassengerRow;
 import com.areascript.taxiapp.user.infra.UserRow;
 import com.google.cloud.Timestamp;
 

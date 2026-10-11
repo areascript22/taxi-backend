@@ -1,6 +1,9 @@
 package com.areascript.taxiapp.user.infra;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
@@ -14,4 +17,29 @@ public interface UserRowRepository extends JpaRepository<UserRow, UUID> {
     Optional<UserRow> findByFirebaseUid(String firebaseUid);
 
     List<UserRow> findAllByFirebaseUidIn(Collection<String> firebaseUids);
+
+    // Crea la persona si no existe. ON CONFLICT hace que dos primeros requests
+    // simultáneos de la misma persona no se pisen: el segundo no hace nada en
+    // vez de fallar por la restricción de unicidad.
+    @Modifying
+    @Query(value = "INSERT INTO users (id, firebase_uid, email, first_name, last_name) "
+            + "VALUES (:id, :uid, :email, :firstName, :lastName) "
+            + "ON CONFLICT (firebase_uid) DO NOTHING", nativeQuery = true)
+    int insertIfAbsent(
+            @Param("id") UUID id,
+            @Param("uid") String firebaseUid,
+            @Param("email") String email,
+            @Param("firstName") String firstName,
+            @Param("lastName") String lastName);
+
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE UserRow u SET u.roleCode = :role, u.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE u.firebaseUid = :uid")
+    int updateRole(@Param("uid") String firebaseUid, @Param("role") String roleCode);
+
+    // Borrado masivo: la cascada de los perfiles y vehículos la hace la base
+    // (ON DELETE CASCADE), no JPA.
+    @Modifying(clearAutomatically = true)
+    @Query("DELETE FROM UserRow u WHERE u.firebaseUid = :uid")
+    int deleteByFirebaseUid(@Param("uid") String firebaseUid);
 }

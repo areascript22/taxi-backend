@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.driveradmin.infra;
+package com.areascript.taxiapp.user.infra;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 

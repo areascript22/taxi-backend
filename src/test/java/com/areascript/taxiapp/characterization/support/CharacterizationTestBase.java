@@ -2,6 +2,7 @@ package com.areascript.taxiapp.characterization.support;
 
 import com.areascript.taxiapp.bootstrap.ApprovalStatusBackfill;
 import com.areascript.taxiapp.driveradmin.api.SuperUserBootstrap;
+import com.areascript.taxiapp.user.domain.UserRole;
 import com.google.cloud.firestore.Firestore;
 import com.google.firebase.ErrorCode;
 import com.google.firebase.FirebaseApp;
@@ -17,6 +18,7 @@ import jakarta.servlet.Filter;
 import org.junit.jupiter.api.BeforeEach;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -62,12 +64,14 @@ import static org.mockito.Mockito.when;
 @SpringBootTest(properties = {
         "taxiapp.admin.founder-uid=" + CharacterizationTestBase.FOUNDER_UID,
         "taxiapp.admin.founder-email=" + CharacterizationTestBase.FOUNDER_EMAIL,
+        "taxiapp.persistence.postgres=false",
         "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
                 + "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration,"
                 + "org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration,"
                 + "org.springframework.boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration"
 })
+@Import(FakeUserStoreConfig.class)
 public abstract class CharacterizationTestBase {
 
     protected static final String RIDES = "taxi_requests";
@@ -102,12 +106,22 @@ public abstract class CharacterizationTestBase {
     @Autowired
     private WebApplicationContext context;
 
+    // La base de usuarios (tabla users) en memoria: de acá sale el rol de cada token.
+    @Autowired
+    protected FakeUserAccounts users;
+
+    @Autowired
+    protected FakeUserProfiles userProfiles;
+
     protected MockMvc mvc;
     protected FakeRealtimeDatabase rtdb;
     protected FakeFirestore firestore;
 
     @BeforeEach
     void setUpCharacterization() throws Exception {
+        users.clear();
+        userProfiles.clear();
+
         rtdb = new FakeRealtimeDatabase();
         rtdb.install(firebaseDatabase);
 
@@ -145,6 +159,13 @@ public abstract class CharacterizationTestBase {
         when(token.getName()).thenReturn(name);
         when(token.getPicture()).thenReturn(picture);
         when(token.getClaims()).thenReturn(new HashMap<>(claims));
+
+        // El rol vive en la base de usuarios, no en el token: el token solo dice
+        // quién es. Se siembra con el que traería (admin / superuser).
+        UserRole role = Boolean.TRUE.equals(claims.get("superuser"))
+                ? UserRole.SUPERUSER
+                : Boolean.TRUE.equals(claims.get("admin")) ? UserRole.ADMIN : UserRole.USER;
+        users.seed(uid, email, name, role);
 
         // doReturn y no when(): when() invocaría verifyIdToken, que por
         // defecto lanza (ver setUpCharacterization).

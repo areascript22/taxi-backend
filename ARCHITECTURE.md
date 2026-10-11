@@ -20,6 +20,7 @@ negocio, solo tiene el esquema base de Flyway.
 | `account` | Que un usuario borre su propia cuenta | `DELETE /api/account` |
 | `driveradmin` | Panel de administración: listar, aprobar/rechazar, bloquear, cambiar rol y eliminar conductores | `GET /api/drivers`<br>`GET /api/drivers/{uid}`<br>`PUT /api/drivers/{uid}/role`<br>`PUT /api/drivers/{uid}/approval-status`<br>`PUT /api/drivers/{uid}/block-status`<br>`DELETE /api/drivers/{uid}` |
 | `appversion` | Decir si una versión de una app todavía se admite (versión mínima por app) | `GET /api/public/app-version?app=driver&version=1.0.7` — **público**, sin token |
+| `user` | Quién es la persona (identidad y rol guardados en Postgres) y sus perfiles de conductor y pasajero | `GET /api/me`<br>`PUT /api/me/device` |
 | `notification` | Traducir y entregar notificaciones push | (ninguno: lo usan las demás features) |
 | `identity` | La cuenta de autenticación (roles, borrado) | (ninguno) |
 | `common` | Errores, configuración, seguridad, Firebase | (ninguno) |
@@ -163,11 +164,30 @@ un ID token de Firebase, **salvo `/api/public/**`** (hoy solo la consulta de
 versión mínima, que las apps hacen antes de iniciar sesión). Fuera de `/api/**`
 no se exige nada.
 
+**El token prueba QUIÉN es; la base dice QUÉ PUEDE hacer.** En cada request el
+filtro verifica el ID token y busca a la persona por `firebase_uid` en `users`
+(si es su primer request, la crea con rol `user`). Las authorities salen de
+`users.role_code`, no de los claims. Por eso un cambio de rol vale en el
+siguiente request y no cuando el token se renueve (hasta 1 hora), y un claim que
+la base no respalda no abre nada.
+
 | Authority | De dónde sale | Para qué |
 |---|---|---|
-| `ROLE_ADMIN` | claim `admin` | Todo el panel (`/api/drivers`) |
-| `ROLE_SUPERUSER` | claim `superuser` | Cambiar roles; actuar sobre admins |
-| `ROLE_FOUNDER` | `taxiapp.admin.founder-uid` **y** `founder-email` coinciden con el token | Cambiar roles aunque no tenga el claim |
+| `ROLE_ADMIN` | `users.role_code` = `admin` o `superuser` | Todo el panel (`/api/drivers`) |
+| `ROLE_SUPERUSER` | `users.role_code` = `superuser` | Cambiar roles; actuar sobre admins |
+| `ROLE_FOUNDER` | `taxiapp.admin.founder-uid` **y** `founder-email` coinciden con el token | Cambiar roles aunque no tenga el rol |
+
+- **Falla cerrado:** si la base no responde, el filtro contesta 503 en vez de
+  autorizar con lo que trae el token.
+- **Claims en transición:** siguen sincronizándose (las reglas de Firestore y
+  Storage los leen). Si difieren de la base el servidor lo avisa en el log
+  (`Rol desalineado`) y manda la base.
+- **El rol se escribe en tres lugares** mientras dure la transición: claims
+  (`IdentityProvider`), Firestore y Postgres (`UserAccounts.setRole`). Si el
+  último falla, repetir la operación lo corrige (es idempotente).
+- **Borrar una cuenta** borra también la fila de `users` (y en cascada sus
+  perfiles). Una petición rezagada con un token todavía válido puede volver a
+  crear una fila vacía; es inofensiva.
 
 Los permisos que dependen de datos (quién puede aceptar una carrera, quién es
 participante de un chat) no son roles del token: los decide el caso de uso.
@@ -344,6 +364,22 @@ estrictamente crecientes, números consecutivos) lo valida el dominio al guardar
 Cuando se implemente el despacho, cada carrera debe guardar una COPIA de los
 anillos con los que arrancó, para que un cambio de configuración a mitad de una
 búsqueda no la altere.
+
+**Dónde vive el código de las personas.** Toda la persistencia de personas
+(`UserRow`, `DriverRow`, `VehicleRow`, `PassengerRow` y sus repositorios) está en
+`user/infra`. Las demás features piden lo que necesitan por un puerto de su
+dominio y es `user/infra` quien lo implementa (hoy `UserAccounts` y
+`UserProfiles`; en el siguiente paso, también `DriverRepository`). Así ninguna
+feature toca las tablas de otra.
+
+`taxiapp.persistence.postgres=false` desactiva esos adaptadores; solo lo usan
+los tests de caracterización, que ponen una base de usuarios en memoria.
+
+**Dispositivo (`PUT /api/me/device`).** El token de notificaciones y el idioma son
+por INSTALACIÓN, no por persona: quien usa las dos apps con la misma cuenta
+tiene uno por app. El body lleva `app` (`driver`/`passenger`). Durante la
+transición se guarda en Postgres **y** en Firestore, porque las notificaciones
+todavía leen de Firestore y las apps viejas siguen escribiendo ahí.
 
 **Entidades JPA.** Son clases `*Row` (`UserRow`, `DriverRow`, `VehicleRow`,
 `PassengerRow`, `DispatchSettingsRow`, `DispatchRingRow`) que viven en `infra` y no salen de ahí: el dominio sigue usando

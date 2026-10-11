@@ -1,6 +1,7 @@
 package com.areascript.taxiapp.common.security;
 
 import com.areascript.taxiapp.common.config.TaxiappProperties;
+import com.areascript.taxiapp.user.domain.UserAccounts;
 import com.google.firebase.auth.FirebaseAuth;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
@@ -26,7 +27,7 @@ import java.nio.charset.StandardCharsets;
 //     ruta inexistente responde 404, no 401).
 //   - La autorización fina se declara en cada endpoint con @PreAuthorize
 //     sobre los roles ROLE_ADMIN / ROLE_SUPERUSER / ROLE_FOUNDER que arma
-//     FirebaseTokenAuthenticationFilter.
+//     FirebaseTokenAuthenticationFilter a partir del rol guardado en la base.
 //
 // Sin estado: no hay sesión ni cookies, cada request trae su token. Por eso
 // tampoco aplica CSRF (que protege justamente a los clientes con cookies).
@@ -38,7 +39,8 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             FirebaseAuth firebaseAuth,
-            TaxiappProperties properties
+            TaxiappProperties properties,
+            UserAccounts userAccounts
     ) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -57,7 +59,7 @@ public class SecurityConfig {
                         .authenticationEntryPoint(unauthorizedEntryPoint())
                         .accessDeniedHandler(forbiddenHandler()))
                 .addFilterBefore(
-                        new FirebaseTokenAuthenticationFilter(firebaseAuth, properties.admin()),
+                        new FirebaseTokenAuthenticationFilter(firebaseAuth, properties.admin(), userAccounts),
                         UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
@@ -91,7 +93,7 @@ public class SecurityConfig {
 
     // Mismo formato que GlobalExceptionHandler (RFC 9457). Los textos son
     // constantes sin comillas: no hace falta escapar nada.
-    private static void writeProblem(HttpServletResponse response, HttpStatus status, String detail)
+    static void writeProblem(HttpServletResponse response, HttpStatus status, String detail)
             throws java.io.IOException {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);

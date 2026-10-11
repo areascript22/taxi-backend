@@ -5,6 +5,7 @@ import com.areascript.taxiapp.account.domain.UserDataCleaner;
 import com.areascript.taxiapp.common.error.ConflictException;
 import com.areascript.taxiapp.common.error.NotFoundException;
 import com.areascript.taxiapp.identity.domain.IdentityProvider;
+import com.areascript.taxiapp.user.domain.UserAccounts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -17,15 +18,18 @@ public class AccountService {
     private final ActiveRideLookup activeRides;
     private final UserDataCleaner dataCleaner;
     private final IdentityProvider identityProvider;
+    private final UserAccounts userAccounts;
 
     public AccountService(
             ActiveRideLookup activeRides,
             UserDataCleaner dataCleaner,
-            IdentityProvider identityProvider
+            IdentityProvider identityProvider,
+            UserAccounts userAccounts
     ) {
         this.activeRides = activeRides;
         this.dataCleaner = dataCleaner;
         this.identityProvider = identityProvider;
+        this.userAccounts = userAccounts;
     }
 
     // Si hay un viaje en curso se rechaza el borrado en vez de cancelarlo a la
@@ -44,6 +48,8 @@ public class AccountService {
         }
 
         dataCleaner.wipe(uid);
+        // La persona y, en cascada, sus perfiles y vehículos en Postgres.
+        userAccounts.remove(uid);
 
         try {
             identityProvider.delete(uid);
