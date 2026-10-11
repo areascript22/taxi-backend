@@ -314,7 +314,8 @@ Migración por pasos; el estado real hoy:
 | 2b | Endpoints de perfil en el servidor y apps escribiendo por ahí (Firestore deja de ser fuente de verdad) | Pendiente |
 | 2c | `DriverRepository`, `DeviceRegistry`, etc. leen de Postgres | Pendiente |
 | 3a | Presencia de conductores y ubicación en PostGIS (V5): interruptor en línea, ubicación, ocupado/libre derivado de la carrera, consulta por radio | Hecho. Falta el despacho por anillos que la use. |
-| 3b | Despacho por anillos y bandeja de ofertas por conductor | Pendiente |
+| 3b | Despacho por anillos y bandeja de ofertas por conductor (`driver_offers/{uid}`) | Hecho en el servidor. Las apps todavía no escuchan la bandeja; `enforce-offers` sigue apagado. |
+| 3c | Apps: ubicación por HTTP y escuchar la bandeja en vez de `taxi_requests`; subir versión mínima; `enforce-offers=true`; cerrar reglas | Pendiente |
 | 3 | Despacho por cercanía con `ST_DWithin` | Pendiente |
 
 La carrera en curso sigue en Realtime Database; el chat, en Firestore.
@@ -389,6 +390,39 @@ Firestore y no se reflejan en Postgres. Se exigen al ponerse en línea y al
 aceptar, pero `findAvailableNear` aún no los filtra: un conductor bloqueado
 estando en línea podría recibir una oferta (el accept lo rechaza). Cuando
 `DriverRepository` pase a Postgres se agrega el filtro.
+
+**El despacho por anillos (`dispatch/application/RingDispatcher`).** Cuando un
+pasajero pide un taxi:
+
+```
+RideRequested ─▶ anillo 1: los N disponibles más cercanos (≤ radio) ─▶ driver_offers/{uid}/{passengerId}
+                 espera wait_seconds
+              ─▶ anillo 2: solo los NUEVOS dentro del radio mayor ─▶ ...
+              ─▶ sin anillos ─▶ NoDriversAvailable
+RideAccepted / RideRequestWithdrawn ─▶ se retiran todas las ofertas y la búsqueda termina
+```
+
+- **Reacciona a hechos, no manda.** Escucha `RideRequested`, `RideAccepted` y
+  `RideRequestWithdrawn`, y le devuelve a `ride` un solo hecho
+  (`NoDriversAvailable`); quien cierra la solicitud es `ride`.
+- **Cada búsqueda lleva una foto del plan** (`DispatchPlan`): un cambio de
+  configuración a mitad de una búsqueda no la altera.
+- **La bandeja es la evidencia.** "A quién se le ofreció" se verifica contra
+  `driver_offers/{uid}/{passengerId}` (con el `rideId`, para que una oferta vieja
+  no autorice una solicitud nueva), no contra la memoria del servidor.
+- **Dos interruptores** (`taxiapp.dispatch.*`), porque se implanta en dos tiempos
+  por las apps viejas: `enabled` (aditivo; ofrece sin quitarle nada a nadie) y
+  `enforce-offers` (solo acepta quien recibió la oferta, y "no hay vehículos" al
+  agotar los anillos). El segundo se enciende después de subir la versión
+  mínima de driver_app.
+- **Reglas de la bandeja** (todavía no versionadas, igual que las demás de RTDB):
+  `driver_offers/$uid` con `.read: auth.uid === $uid` y `.write: false`.
+- **Límite:** los temporizadores de los anillos viven en memoria. Si el servidor
+  se reinicia a mitad de una búsqueda, esa búsqueda no sigue ampliando; la
+  solicitud igual vence (mismo límite que el vencimiento de solicitudes).
+- **Sin push de respaldo todavía:** una app cerrada se entera por el servicio en
+  primer plano (que escuchará la bandeja). Un FCM de alta prioridad como
+  respaldo queda pendiente.
 
 **Configuración del despacho (V4).** Lo que decide a quién se le ofrece un pedido
 vive en la base y lo edita un administrador, sin desplegar:

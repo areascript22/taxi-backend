@@ -116,6 +116,9 @@ public abstract class CharacterizationTestBase {
     @Autowired
     protected FakeDriverPresence presence;
 
+    @Autowired
+    protected FakeDispatchPlans dispatchPlans;
+
     protected MockMvc mvc;
     protected FakeRealtimeDatabase rtdb;
     protected FakeFirestore firestore;
@@ -125,6 +128,7 @@ public abstract class CharacterizationTestBase {
         users.clear();
         userProfiles.clear();
         presence.clear();
+        dispatchPlans.clear();
 
         rtdb = new FakeRealtimeDatabase();
         rtdb.install(firebaseDatabase);

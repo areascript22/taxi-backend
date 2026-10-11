@@ -22,4 +22,9 @@ public class FakeUserStoreConfig {
     public FakeDriverPresence fakeDriverPresence() {
         return new FakeDriverPresence();
     }
+
+    @Bean
+    public FakeDispatchPlans fakeDispatchPlans() {
+        return new FakeDispatchPlans();
+    }
 }

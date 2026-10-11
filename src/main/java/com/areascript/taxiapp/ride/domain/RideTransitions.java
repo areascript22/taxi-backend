@@ -25,6 +25,9 @@ public final class RideTransitions {
     public static final String CANCELLED_BY_PASSENGER = "passenger";
     public static final String CANCELLED_BY_DRIVER = "driver";
 
+    // Por qué cerró el sistema una solicitud (campo `cancelReason`).
+    public static final String CANCEL_REASON_NO_DRIVERS = "noDrivers";
+
     private RideTransitions() {
     }
 
@@ -189,6 +192,22 @@ public final class RideTransitions {
             return RideChange.rejected(NOT_ALLOWED);
         }
         return RideChange.update(cancelledFields(CANCELLED_BY_SYSTEM));
+    }
+
+    // PENDING -> CANCELLED porque el despacho recorrió todos los anillos y nadie
+    // aceptó. Igual que `expire` (solo si sigue PENDING y es la MISMA solicitud),
+    // pero deja el motivo explícito en `cancelReason`: el pasajero ve "no hay
+    // vehículos disponibles" y no un cierre genérico del sistema.
+    public static RideChange noDriversAvailable(Ride current, String rideId) {
+        if (current == null) {
+            return RideChange.unchanged();
+        }
+        if (current.status() != RideStatus.PENDING || !rideId.equals(current.rideId())) {
+            return RideChange.rejected(NOT_ALLOWED);
+        }
+        Map<String, Object> fields = cancelledFields(CANCELLED_BY_SYSTEM);
+        fields.put("cancelReason", CANCEL_REASON_NO_DRIVERS);
+        return RideChange.update(fields);
     }
 
     // TRIP_STARTED -> TRIP_COMPLETED, solo por el conductor asignado. El estado

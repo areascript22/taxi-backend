@@ -1,10 +1,13 @@
 package com.areascript.taxiapp.ride.application;
 
+import com.areascript.taxiapp.common.config.DispatchProperties;
 import com.areascript.taxiapp.common.config.TaxiappProperties;
 import com.areascript.taxiapp.common.error.ConflictException;
 import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.error.ForbiddenException;
 import com.areascript.taxiapp.common.error.NotFoundException;
+import com.areascript.taxiapp.dispatch.domain.NoDriversAvailable;
+import com.areascript.taxiapp.dispatch.domain.OfferInbox;
 import com.areascript.taxiapp.driveradmin.domain.ApprovalStatus;
 import com.areascript.taxiapp.driveradmin.domain.Driver;
 import com.areascript.taxiapp.driveradmin.domain.DriverRepository;
@@ -21,12 +24,15 @@ import com.areascript.taxiapp.ride.domain.RideAccepted;
 import com.areascript.taxiapp.ride.domain.RideEnded;
 import com.areascript.taxiapp.ride.domain.RideOutcome;
 import com.areascript.taxiapp.ride.domain.RideRepository;
+import com.areascript.taxiapp.ride.domain.RideRequestWithdrawn;
+import com.areascript.taxiapp.ride.domain.RideRequested;
 import com.areascript.taxiapp.ride.domain.RideStatus;
 import com.areascript.taxiapp.ride.domain.RideTimers;
 import com.areascript.taxiapp.ride.domain.RideTransitions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -45,6 +51,8 @@ public class RideLifecycleService {
     private final UserNotifier notifier;
     private final ApplicationEventPublisher events;
     private final RideTimers timers;
+    private final OfferInbox offers;
+    private final DispatchProperties dispatchProperties;
     private final TaxiappProperties.Rides settings;
     private final Clock clock;
 
@@ -54,6 +62,8 @@ public class RideLifecycleService {
             UserNotifier notifier,
             ApplicationEventPublisher events,
             RideTimers timers,
+            OfferInbox offers,
+            DispatchProperties dispatchProperties,
             TaxiappProperties properties,
             Clock clock
     ) {
@@ -62,6 +72,8 @@ public class RideLifecycleService {
         this.notifier = notifier;
         this.events = events;
         this.timers = timers;
+        this.offers = offers;
+        this.dispatchProperties = dispatchProperties;
         this.settings = properties.rides();
         this.clock = clock;
     }
@@ -103,6 +115,11 @@ public class RideLifecycleService {
         // vuelve a pedir dentro de la ventana, la tarea vieja no puede vencer
         // a la nueva.
         timers.expireAfter(settings.pendingRequestExpiry(), () -> expireIfStillPending(passengerId, rideId));
+
+        // Quien reacciona a que hay una solicitud nueva (hoy, el despacho busca a
+        // quién ofrecérsela) se entera por el evento; no puede revertirla.
+        events.publishEvent(new RideRequested(rideId, passengerId, passengerName,
+                pickup.latitude(), pickup.longitude(), pickup.address(), pickup.sector()));
     }
 
     // Tarea agendada desde requestRide: si pasado el margen la solicitud sigue
@@ -132,6 +149,7 @@ public class RideLifecycleService {
         log.info("RideDebug | Solicitud de passengerId={} auto-cancelada tras {}s sin conductor",
                 passengerId, settings.pendingRequestExpiry().toSeconds());
         scheduleCleanup(passengerId);
+        events.publishEvent(new RideRequestWithdrawn(rideId, passengerId));
     }
 
     // Reemplaza la transacción que antes corría en driver_app directo sobre
@@ -149,6 +167,9 @@ public class RideLifecycleService {
     ) {
         // Primero se autoriza al conductor, antes de tocar la carrera.
         DriverContact contact = authorizedContact(driverUid, driverEmail, driverDisplayName, driverPhotoUrl);
+        if (dispatchProperties.enforceOffers()) {
+            requireOffered(passengerId, driverUid);
+        }
 
         RideOutcome outcome = rides.transact(
                 passengerId,
@@ -181,6 +202,53 @@ public class RideLifecycleService {
         // Quien reacciona a que la carrera fue aceptada (hoy, el chat abre su
         // hilo) se entera por el evento; los listeners no pueden revertirla.
         events.publishEvent(new RideAccepted(ride.rideId(), passengerId, driverUid));
+    }
+
+    // Con el despacho por cercanía, solo puede aceptar quien recibió la oferta:
+    // un conductor a 10 km que nunca la vio no puede quedarse con la carrera
+    // adivinando el passengerId. La bandeja de ofertas es la evidencia, así que
+    // sigue valiendo aunque el servidor se haya reiniciado.
+    private void requireOffered(String passengerId, String driverUid) {
+        Ride current = rides.find(passengerId).orElseThrow(() -> rideNotFound(passengerId));
+        if (!offers.wasOffered(driverUid, passengerId, current.rideId())) {
+            log.warn("RideDebug | driverUid={} intentó aceptar passengerId={} sin que se le hubiera ofrecido",
+                    driverUid, passengerId);
+            throw new ForbiddenException("Esta carrera no te fue ofrecida");
+        }
+    }
+
+    // El despacho recorrió todos los anillos y nadie aceptó: la solicitud se
+    // cierra como las demás canceladas por el sistema, pero con el motivo
+    // explícito para que el pasajero vea "no hay vehículos disponibles" y no un
+    // mensaje genérico. Corre en un hilo del planificador: nunca relanza.
+    @EventListener
+    public void on(NoDriversAvailable event) {
+        RideOutcome outcome;
+        try {
+            outcome = rides.transact(event.passengerId(),
+                    ride -> RideTransitions.noDriversAvailable(ride, event.rideId()));
+        } catch (ExternalServiceException e) {
+            log.error("RideDebug | No se pudo cerrar la solicitud de passengerId={} sin conductores: {}",
+                    event.passengerId(), e.getMessage());
+            return;
+        }
+
+        boolean closed = outcome.committed()
+                && outcome.ride() != null
+                && outcome.ride().status() == RideStatus.CANCELLED;
+        if (!closed) {
+            // La aceptaron o la canceló el pasajero justo ahora: no hay nada que cerrar.
+            return;
+        }
+
+        log.info("RideDebug | Solicitud de passengerId={} cerrada: no hay conductores disponibles", event.passengerId());
+        notifier.notifyUser(
+                Recipient.passenger(event.passengerId()),
+                PushMessage.translated(
+                        "push.ride.noDrivers.title",
+                        "push.ride.noDrivers.body",
+                        PushRoutes.PASSENGER_RIDE_TRACKING));
+        scheduleCleanup(event.passengerId());
     }
 
     // Quién puede aceptar carreras: un conductor registrado (existe su
@@ -296,6 +364,9 @@ public class RideLifecycleService {
         // entera por el evento.
         if (ride.driverId() != null) {
             events.publishEvent(new RideEnded(ride.rideId(), passengerId, ride.driverId()));
+        } else {
+            // Sin conductor: la solicitud deja de ofrecerse.
+            events.publishEvent(new RideRequestWithdrawn(ride.rideId(), passengerId));
         }
     }
 
