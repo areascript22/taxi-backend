@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.dto;
+package com.areascript.taxiapp.ride.api;
 
 // `sector` es el sector de Riobamba donde cae el punto de recogida, resuelto por
 // passenger_app con los polígonos de assets/json/sectors.geojson. driver_app lo

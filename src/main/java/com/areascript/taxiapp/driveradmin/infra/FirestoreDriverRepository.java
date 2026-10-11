@@ -162,7 +162,7 @@ public class FirestoreDriverRepository implements DriverRepository {
     private Driver toDriver(DocumentSnapshot document) {
         Map<String, Object> data = document.getData() == null ? Map.of() : document.getData();
         String vehicleId = stringField(data, "vehicleId");
-        Vehicle vehicle = vehicleId.isBlank() ? null : findVehicle(vehicleId);
+        Vehicle vehicle = vehicleId.isBlank() ? null : findVehicleOrNull(vehicleId);
 
         return new Driver(
                 document.getId(),
@@ -184,6 +184,20 @@ public class FirestoreDriverRepository implements DriverRepository {
                 instantField(data, "updatedAt"),
                 vehicle
         );
+    }
+
+    // El vehículo es información complementaria del conductor: si su lectura
+    // falla, el conductor se devuelve igual, sin vehículo. Así un fallo
+    // puntual no tumba el listado completo del panel ni impide que un conductor
+    // acepte una carrera (el pasajero simplemente no ve los datos del auto).
+    // El fallo de leer al CONDUCTOR sí se propaga.
+    private Vehicle findVehicleOrNull(String vehicleId) {
+        try {
+            return findVehicle(vehicleId);
+        } catch (ExternalServiceException e) {
+            log.warn("DriverAdminDebug | Se devuelve el conductor sin vehículo: {}", e.getMessage());
+            return null;
+        }
     }
 
     private Vehicle findVehicle(String vehicleId) {

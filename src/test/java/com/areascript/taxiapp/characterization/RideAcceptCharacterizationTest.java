@@ -136,6 +136,27 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
                 .doesNotContainKeys("vehiclePlate", "vehicleBrand", "vehicleModel", "vehicleColor");
     }
 
+    // El vehículo es información complementaria: un fallo puntual al leerlo no
+    // impide asignar (a diferencia de un fallo al leer al conductor, que sí).
+    @Test
+    void asigna_igual_si_falla_la_lectura_del_vehiculo() throws Exception {
+        givenRide("p1", "pending", null);
+        driverProfile("d1", "v1", "fcm-d1", "es");
+        vehicle("v1", "d1");
+        firestore.failReadsOf("vehicles/v1", new RuntimeException("firestore caído"));
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isNoContent());
+
+        assertThat(rideField("p1", "status")).isEqualTo("driverAssigned");
+        Map<String, Object> data = rtdb.getMap(RIDES + "/p1/driver/data");
+        assertThat(data).containsEntry("id", "d1").containsEntry("phoneNumber", "0990000000")
+                .doesNotContainKeys("vehiclePlate", "vehicleBrand", "vehicleModel", "vehicleColor");
+    }
+
     @Test
     void sin_push_si_el_pasajero_no_tiene_token_fcm() throws Exception {
         givenRide("p1", "pending", null);
