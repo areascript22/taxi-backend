@@ -1,0 +1,83 @@
+# TaxiGo backend: Postgres + PostGIS y el servidor Spring Boot, cada uno en su
+# contenedor, en el mismo droplet (2 GB de RAM).
+#
+#   Servidor:    docker compose up -d
+#   Desarrollo:  docker compose -f compose.yaml -f compose.dev.yaml up -d db
+#
+# Las variables salen de .env (ver .env.example). Presupuesto de memoria:
+#   db  ~640 MB  +  app ~900 MB  +  sistema/Docker/Caddy ~400 MB  =  ~1,9 GB
+# Los límites (mem_limit) hacen que, si uno se desborda, lo mate Docker a ÉL y
+# no al otro. Hay 1-2 GB de swap en el droplet como red de seguridad.
+
+name: taxiapp
+
+services:
+  db:
+    image: postgis/postgis:16-3.4   # fija: un salto de versión mayor exige dump/restore
+    container_name: taxiapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: taxiapp
+      POSTGRES_USER: taxiapp
+      # Sin valor por defecto: la imagen se niega a arrancar con la contraseña
+      # vacía, que es lo que queremos que pase si se olvida definirla.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Ajustes para ~640 MB y un servidor que usa un pool de 8 conexiones.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=30
+      -c wal_compression=on
+      -c log_min_duration_statement=500
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 128mb
+    mem_limit: 640m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taxiapp -d taxiapp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging: &log-rotation
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # SIN `ports:`. Docker publica por encima del firewall (ufw): el único que
+    # habla con la base es el servidor, por la red interna de compose. En
+    # desarrollo, compose.dev.yaml la expone solo en 127.0.0.1.
+
+  app:
+    image: ${TAXIAPP_IMAGE:-taxiapp:local}
+    build: .
+    container_name: taxiapp
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/taxiapp
+      SPRING_DATASOURCE_USERNAME: taxiapp
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      FIREBASE_CREDENTIALS_PATH: file:/run/secrets/firebase-adminsdk.json
+      TAXIAPP_ADMIN_FOUNDER_UID: ${TAXIAPP_ADMIN_FOUNDER_UID:-}
+      TAXIAPP_ADMIN_FOUNDER_EMAIL: ${TAXIAPP_ADMIN_FOUNDER_EMAIL:-}
+      # El tope es relativo al límite del contenedor (900 MB), no al del droplet.
+      # SerialGC: con 1 vCPU, los recolectores paralelos cuestan más de lo que ahorran.
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60 -XX:+UseSerialGC
+    volumes:
+      - ${FIREBASE_CREDENTIALS_FILE:-./secrets/taxigo-dev-firebase-adminsdk.json}:/run/secrets/firebase-adminsdk.json:ro
+    # Solo loopback: nadie llega al 8080 desde internet, únicamente Caddy desde
+    # la propia máquina (que hace el TLS).
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 900m
+    logging: *log-rotation
+
+volumes:
+  pgdata:

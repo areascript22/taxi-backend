@@ -55,9 +55,16 @@ import static org.mockito.Mockito.when;
 //
 // El fundador se fija acá con valores de prueba: así los tests no dependen de
 // lo que haya en secrets/taxiapp-secrets.properties de cada máquina.
+//
+// Estos tests no usan Postgres (los datos viven en Firebase): se excluyen la
+// conexión y las migraciones para que corran sin Docker. Las migraciones se
+// prueban aparte, contra un Postgres real, en DatabaseMigrationTest.
 @SpringBootTest(properties = {
         "taxiapp.admin.founder-uid=" + CharacterizationTestBase.FOUNDER_UID,
-        "taxiapp.admin.founder-email=" + CharacterizationTestBase.FOUNDER_EMAIL
+        "taxiapp.admin.founder-email=" + CharacterizationTestBase.FOUNDER_EMAIL,
+        "spring.autoconfigure.exclude="
+                + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
+                + "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration"
 })
 public abstract class CharacterizationTestBase {
 

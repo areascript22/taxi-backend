@@ -4,8 +4,9 @@ Reglas que hay que seguir **siempre** al trabajar en este proyecto. El detalle
 de cómo está armado y por qué está en [`ARCHITECTURE.md`](ARCHITECTURE.md);
 léelo antes de tocar una feature.
 
-Stack: Spring Boot 4, Java 21, Maven, Firebase Admin SDK. Sin base de datos
-propia. Los comentarios y los mensajes de log están en **español**.
+Stack: Spring Boot 4, Java 21, Maven, Firebase Admin SDK, PostgreSQL + PostGIS
+(Flyway; en migración, ver `ARCHITECTURE.md` sección 11). Los comentarios y los
+mensajes de log están en **español**.
 
 ---
 
@@ -74,6 +75,16 @@ atómica y puede reejecutarla, así que **no puede tener efectos secundarios**.
   límite.
 - Los `Transaction.Handler` de Realtime Database solo viven en
   `RealtimeDbRideRepository`.
+
+### Base de datos
+- El esquema solo cambia con migraciones Flyway
+  (`db/migration/V<n>__<descripcion>.sql`). **Una migración ya aplicada no se
+  edita**: se crea una nueva. Nada de `ddl-auto=update`.
+- Coordenadas en PostGIS: el orden es **(lng, lat)**, no (lat, lng).
+- Ningún puerto de la base se publica en `compose.yaml`; solo `compose.dev.yaml`
+  lo hace, y en `127.0.0.1`.
+- Los tests que necesitan Postgres usan Testcontainers y se saltan solos si no
+  hay Docker. Los de caracterización excluyen DataSource/Flyway.
 
 ### Estilo
 - DTOs y modelos como `record`.

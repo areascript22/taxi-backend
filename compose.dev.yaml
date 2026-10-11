@@ -1,0 +1,19 @@
+# Overlay para DESARROLLO LOCAL. Se usa junto con compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d db
+#
+# Levanta solo la base y la deja en localhost:5442, para correr el servidor
+# desde IntelliJ (application-dev.properties ya apunta ahí).
+#
+# 5442 y no 5432 a propósito: en Windows es muy común tener uno o más
+# Postgres instalados que ya ocupan 5432, 5433, 5434... Si 5442 también está ocupado, define
+# DB_HOST_PORT en .env y ajusta spring.datasource.url.
+
+services:
+  db:
+    environment:
+      # Contraseña SOLO de desarrollo; coincide con application-dev.properties.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taxiapp_dev}
+    # Solo loopback: la base de tu PC no queda expuesta a la red local.
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5442}:5432"

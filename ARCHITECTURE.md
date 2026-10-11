@@ -1,9 +1,10 @@
 # Arquitectura del servidor
 
 Backend de TaxiGo (Spring Boot 4, Java 21). Lo consumen `driver_app` y
-`passenger_app`. No tiene base de datos propia: usa Firebase (Realtime
-Database, Firestore, Authentication, Storage y Cloud Messaging) mediante el
-Admin SDK.
+`passenger_app`. Usa Firebase (Realtime Database, Firestore, Authentication,
+Storage y Cloud Messaging) mediante el Admin SDK y tiene una base PostgreSQL +
+PostGIS propia, en migración (ver sección 11): hoy está vacía de datos de
+negocio, solo tiene el esquema base de Flyway.
 
 > Las reglas para escribir código en este proyecto están en [`CLAUDE.md`](CLAUDE.md).
 > Este documento explica **cómo está armado y por qué**.
@@ -272,3 +273,40 @@ Cosas que **no están resueltas** y conviene tener presentes:
 - **`bootstrap/ApprovalStatusBackfill`** es un script de una sola corrida que
   habla directo con Firestore; se puede borrar cuando ya se ejecutó en
   producción.
+- **Postgres y el servidor comparten un único droplet de 1 vCPU / 2 GB.** Los
+  límites de memoria de `compose.yaml` (db 640 MB, app 900 MB) existen para que
+  uno no mate al otro. Sin alta disponibilidad: si el droplet cae, cae todo.
+- **Los backups viven fuera del droplet solo si se corre `ops/pull-backups.ps1`.**
+  El cron del droplet deja los dumps en el mismo disco; sin la copia a la PC, un
+  fallo del droplet pierde datos y backups a la vez.
+
+---
+
+## 11. Base de datos (PostgreSQL + PostGIS)
+
+Migración por pasos; el estado real hoy:
+
+| Paso | Qué | Estado |
+|---|---|---|
+| 1 | Postgres/PostGIS en Docker + Flyway (esquema base) + backups | Hecho. Ninguna feature lee ni escribe en la base todavía. |
+| 2 | Usuarios, roles y vehículos pasan de Firestore a Postgres | Pendiente |
+| 3 | Despacho por cercanía con `ST_DWithin` | Pendiente |
+
+La carrera en curso sigue en Realtime Database; el chat, en Firestore.
+
+**Migraciones.** Flyway, en `src/main/resources/db/migration/V<n>__<descripcion>.sql`.
+Una migración ya aplicada **no se edita nunca**: se agrega una nueva. Flyway
+guarda el checksum de cada archivo y el arranque falla si cambió.
+
+**Contenedores.** `compose.yaml` es el stack completo (db + app, tal como corre
+en el droplet). `compose.dev.yaml` es un overlay que publica la base en
+`127.0.0.1:5442` para correr el servidor desde IntelliJ:
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up -d db
+```
+
+La base nunca publica puertos en producción: Docker se salta `ufw`, así que un
+`ports:` en `db` la expondría a internet aunque el firewall diga que no.
+
+**Backups y restauración.** Ver [`ops/README.md`](ops/README.md).

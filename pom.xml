@@ -48,6 +48,39 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- Base de datos propia (Postgres + PostGIS). Etapa 3 de la migración:
+		     por ahora solo el esquema base con Flyway; los usuarios y el
+		     despacho por cercanía llegan en los pasos siguientes. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-jdbc</artifactId>
+		</dependency>
+
+		<!-- Migraciones: Flyway es dueño del esquema (ver db/migration). El
+		     starter es el que activa la autoconfiguración en Spring Boot 4; el
+		     módulo de Postgres es obligatorio desde Flyway 10. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<!-- Un Postgres real (con PostGIS) para probar las migraciones, en un
+		     contenedor de Docker. Ver DatabaseMigrationTest. -->
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 		<!-- Reglas de arquitectura como tests (ver ArchitectureRulesTest).
 		     Se usa la librería base y no archunit-junit5: las reglas corren
 		     como @Test normales y no dependen del engine de JUnit. -->
