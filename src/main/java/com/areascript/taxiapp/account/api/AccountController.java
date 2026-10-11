@@ -1,7 +1,7 @@
-package com.areascript.taxiapp.controller;
+package com.areascript.taxiapp.account.api;
 
+import com.areascript.taxiapp.account.application.AccountService;
 import com.areascript.taxiapp.common.security.AuthenticatedUser;
-import com.areascript.taxiapp.service.AccountService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;

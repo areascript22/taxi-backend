@@ -7,6 +7,9 @@ import com.tngtech.archunit.lang.ArchRule;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.stream.Stream;
+
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 // Reglas de la arquitectura objetivo del servidor: paquete por funcionalidad
@@ -68,6 +71,43 @@ class ArchitectureRulesTest {
     void la_api_no_depende_de_la_infraestructura() {
         ArchRule rule = noClasses().that().resideInAPackage("..api..")
                 .should().dependOnClassesThat().resideInAPackage("..infra..")
+                .allowEmptyShould(true);
+        rule.check(classes);
+    }
+
+    // Las features se conocen entre sí solo por su dominio (sus interfaces y su
+    // modelo). Nunca por la aplicación, la api ni la infraestructura de otra:
+    // así cada una se puede cambiar o migrar sin arrastrar a las demás.
+    //
+    // Las clases que todavía no se migraron (service/, controller/) no son
+    // una feature y no se rigen por esta regla.
+    @Test
+    void las_features_solo_se_conocen_por_su_dominio() {
+        List<String> features = List.of("notification", "identity", "account", "driveradmin");
+
+        for (String feature : features) {
+            String[] othersInternals = features.stream()
+                    .filter(other -> !other.equals(feature))
+                    .flatMap(other -> Stream.of("application", "infra", "api")
+                            .map(layer -> "com.areascript.taxiapp." + other + "." + layer + ".."))
+                    .toArray(String[]::new);
+
+            noClasses().that().resideInAPackage("com.areascript.taxiapp." + feature + "..")
+                    .should().dependOnClassesThat().resideInAnyPackage(othersInternals)
+                    .as("la feature '" + feature + "' no debe depender de application/infra/api de otra feature")
+                    .check(classes);
+        }
+    }
+
+    // La capa api (controllers y arranque) no toca Firebase: pasa por los
+    // casos de uso. El SDK vive solo en infra y en common.
+    @Test
+    void la_capa_api_no_usa_el_sdk_de_firebase() {
+        ArchRule rule = noClasses().that().resideInAPackage("..api..")
+                .should().dependOnClassesThat().resideInAnyPackage(
+                        "com.google.firebase..",
+                        "com.google.cloud.."
+                )
                 .allowEmptyShould(true);
         rule.check(classes);
     }

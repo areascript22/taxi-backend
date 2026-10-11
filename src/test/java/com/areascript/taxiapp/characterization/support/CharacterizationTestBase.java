@@ -1,7 +1,7 @@
 package com.areascript.taxiapp.characterization.support;
 
 import com.areascript.taxiapp.bootstrap.ApprovalStatusBackfill;
-import com.areascript.taxiapp.bootstrap.SuperUserBootstrap;
+import com.areascript.taxiapp.driveradmin.api.SuperUserBootstrap;
 import com.google.cloud.firestore.Firestore;
 import com.google.firebase.ErrorCode;
 import com.google.firebase.FirebaseApp;

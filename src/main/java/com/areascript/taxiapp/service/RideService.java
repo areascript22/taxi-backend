@@ -1,5 +1,6 @@
 package com.areascript.taxiapp.service;
 
+import com.areascript.taxiapp.account.domain.ActiveRideLookup;
 import com.areascript.taxiapp.common.config.TaxiappProperties;
 import com.areascript.taxiapp.common.error.ConflictException;
 import com.areascript.taxiapp.common.error.ExternalServiceException;
@@ -37,7 +38,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 @Service
-public class RideService {
+public class RideService implements ActiveRideLookup {
 
     private static final Logger log = LoggerFactory.getLogger(RideService.class);
     private static final String TAXI_REQUESTS_PATH = "taxi_requests";
@@ -884,6 +885,13 @@ public class RideService {
         }
 
         return null;
+    }
+
+    // Puerto de la feature account (ver ActiveRideLookup): borrar la cuenta en
+    // medio de un viaje no está permitido, ni como pasajero ni como conductor.
+    @Override
+    public boolean hasActiveRide(String uid) {
+        return findActiveRideForDriver(uid) != null || findActiveRideForPassenger(uid) != null;
     }
 
     @SuppressWarnings("unchecked")

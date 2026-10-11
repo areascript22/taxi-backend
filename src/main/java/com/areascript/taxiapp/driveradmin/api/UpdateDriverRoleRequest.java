@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.controller;
+package com.areascript.taxiapp.driveradmin.api;
 
 public record UpdateDriverRoleRequest(String role) {
 }

@@ -1,9 +1,7 @@
-package com.areascript.taxiapp.controller;
+package com.areascript.taxiapp.driveradmin.api;
 
 import com.areascript.taxiapp.common.security.AuthenticatedUser;
-import com.areascript.taxiapp.dto.DriverDTO;
-import com.areascript.taxiapp.dto.DriverPageDTO;
-import com.areascript.taxiapp.service.DriverAdminService;
+import com.areascript.taxiapp.driveradmin.application.DriverAdminService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -46,22 +44,22 @@ public class DriverAdminController {
     // necesita ver a todos los conductores para filtrar). Con pageSize: una
     // página vía cursor (lo usa la navegación normal de la lista).
     @GetMapping
-    public ResponseEntity<DriverPageDTO> listDrivers(
+    public ResponseEntity<DriverPageResponse> listDrivers(
             @RequestParam(required = false) Integer pageSize,
             @RequestParam(required = false) String cursor
     ) {
-        DriverPageDTO page = pageSize != null
+        var page = pageSize != null
                 ? driverAdminService.listDriversPage(pageSize, cursor)
                 : driverAdminService.listAllDrivers();
-        return ResponseEntity.ok(page);
+        return ResponseEntity.ok(DriverPageResponse.from(page));
     }
 
     // Refresco puntual de un conductor -- lo usa la app al volver de la
     // pantalla de detalle, para resincronizar ese registro sin recargar (y
     // perder la posición de) la lista paginada completa.
     @GetMapping("/{uid}")
-    public ResponseEntity<DriverDTO> getDriver(@PathVariable String uid) {
-        return ResponseEntity.ok(driverAdminService.getDriver(uid));
+    public ResponseEntity<DriverResponse> getDriver(@PathVariable String uid) {
+        return ResponseEntity.ok(DriverResponse.from(driverAdminService.getDriver(uid)));
     }
 
     // Cambiar roles exige superuser, o ser el fundador del proyecto aunque

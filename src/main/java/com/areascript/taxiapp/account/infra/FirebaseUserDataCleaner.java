@@ -1,5 +1,6 @@
-package com.areascript.taxiapp.service;
+package com.areascript.taxiapp.account.infra;
 
+import com.areascript.taxiapp.account.domain.UserDataCleaner;
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
@@ -10,24 +11,24 @@ import com.google.firebase.FirebaseApp;
 import com.google.firebase.cloud.StorageClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-// Borrado total de la data de un usuario (todo salvo Firebase Authentication,
-// que queda a cargo de cada caller -- ver AccountService y DriverAdminService,
-// que lo borran en momentos distintos por razones distintas). Compartido por
-// ambos flujos de eliminación (admin elimina conductor / usuario elimina su
-// propia cuenta) para que ninguno de los dos deje datos huérfanos: antes de
-// esto, DriverAdminService.deleteDriver solo borraba Auth + el doc de
+// Implementación de UserDataCleaner sobre Firestore y Firebase Storage:
+// borra el perfil (drivers/passengers), el vehículo, la foto y los chats del
+// usuario. Ver el puerto para el contrato y para por qué la cuenta de
+// autenticación queda a cargo de cada flujo.
+//
+// Antes de existir esto, borrar a un conductor solo eliminaba Auth + el doc de
 // Firestore, sin tocar el vehículo, la foto de Storage ni los chats.
-@Service
-public class AccountCleanupService {
+@Component
+public class FirebaseUserDataCleaner implements UserDataCleaner {
 
-    private static final Logger log = LoggerFactory.getLogger(AccountCleanupService.class);
+    private static final Logger log = LoggerFactory.getLogger(FirebaseUserDataCleaner.class);
     private static final String DRIVERS_COLLECTION = "drivers";
     private static final String PASSENGERS_COLLECTION = "passengers";
     private static final String VEHICLES_COLLECTION = "vehicles";
@@ -38,7 +39,7 @@ public class AccountCleanupService {
     private final FirebaseApp firebaseApp;
     private final long timeoutMillis;
 
-    public AccountCleanupService(Firestore firestore, FirebaseApp firebaseApp, FirebaseProperties firebaseProperties) {
+    public FirebaseUserDataCleaner(Firestore firestore, FirebaseApp firebaseApp, FirebaseProperties firebaseProperties) {
         this.firestore = firestore;
         this.firebaseApp = firebaseApp;
         this.timeoutMillis = firebaseProperties.operationTimeout().toMillis();
@@ -48,7 +49,8 @@ public class AccountCleanupService {
     // de los documentos drivers/passengers -- el objetivo es dejar la cuenta
     // lo más limpia posible incluso si, por ejemplo, Storage no está
     // configurado todavía en este entorno (ver FirebaseConfig.storageBucket).
-    public void wipeUserData(String uid) {
+    @Override
+    public void wipe(String uid) {
         deleteChatsForUser(uid);
 
         DocumentSnapshot driverSnapshot = getDocument(DRIVERS_COLLECTION, uid);
