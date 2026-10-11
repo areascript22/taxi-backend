@@ -6,29 +6,24 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.util.UUID;
 
-// Una fila de la tabla `drivers`. Es la representación PERSISTENTE (JPA), no el
-// modelo de negocio: el dominio usa `Driver` (un record inmutable) y esta clase
-// no sale de infra. Se llama "Row" para no confundirla con una entidad de
-// dominio.
+// Una fila de la tabla `drivers`: lo PROPIO del conductor. La identidad (nombre,
+// correo, rol, bloqueo) está en `users`; esta fila cuelga de ella por user_id.
+//
+// Es la representación PERSISTENTE (JPA), no el modelo de negocio: el dominio
+// usa `Driver` (un record inmutable) y esta clase no sale de infra. Se llama
+// "Row" para no confundirla con una entidad de dominio.
 //
 // JPA exige clase mutable y constructor sin argumentos; por eso no es un record.
 @Entity
 @Table(name = "drivers")
 public class DriverRow {
 
+    // También es clave foránea a users(id).
     @Id
-    @Column(name = "uid")
-    private String uid;
-
-    @Column(name = "first_name", nullable = false)
-    private String firstName = "";
-
-    @Column(name = "last_name", nullable = false)
-    private String lastName = "";
-
-    @Column(name = "email", nullable = false)
-    private String email = "";
+    @Column(name = "user_id")
+    private UUID userId;
 
     @Column(name = "phone_number", nullable = false)
     private String phoneNumber = "";
@@ -39,10 +34,6 @@ public class DriverRow {
     @Column(name = "rating", nullable = false)
     private double rating = 5.0;
 
-    // Valores: driver | admin | superuser (CHECK en la base).
-    @Column(name = "role", nullable = false)
-    private String role = "driver";
-
     // Valores: pending | approved | rejected (CHECK en la base).
     @Column(name = "approval_status", nullable = false)
     private String approvalStatus = "pending";
@@ -50,8 +41,9 @@ public class DriverRow {
     @Column(name = "approved_at")
     private Instant approvedAt;
 
+    // users.id del admin que aprobó.
     @Column(name = "approved_by")
-    private String approvedBy;
+    private UUID approvedBy;
 
     @Column(name = "rejection_reason")
     private String rejectionReason;
@@ -59,21 +51,11 @@ public class DriverRow {
     @Column(name = "rejected_at")
     private Instant rejectedAt;
 
+    // users.id del admin que rechazó.
     @Column(name = "rejected_by")
-    private String rejectedBy;
+    private UUID rejectedBy;
 
-    @Column(name = "is_blocked", nullable = false)
-    private boolean blocked;
-
-    @Column(name = "block_reason")
-    private String blockReason;
-
-    @Column(name = "blocked_at")
-    private Instant blockedAt;
-
-    @Column(name = "blocked_by")
-    private String blockedBy;
-
+    // Por instalación de la app del conductor.
     @Column(name = "language")
     private String language;
 
@@ -92,20 +74,11 @@ public class DriverRow {
     protected DriverRow() {
     }
 
-    public DriverRow(String uid) {
-        this.uid = uid;
+    public DriverRow(UUID userId) {
+        this.userId = userId;
     }
 
-    public String getUid() { return uid; }
-
-    public String getFirstName() { return firstName; }
-    public void setFirstName(String firstName) { this.firstName = firstName; }
-
-    public String getLastName() { return lastName; }
-    public void setLastName(String lastName) { this.lastName = lastName; }
-
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
+    public UUID getUserId() { return userId; }
 
     public String getPhoneNumber() { return phoneNumber; }
     public void setPhoneNumber(String phoneNumber) { this.phoneNumber = phoneNumber; }
@@ -116,17 +89,14 @@ public class DriverRow {
     public double getRating() { return rating; }
     public void setRating(double rating) { this.rating = rating; }
 
-    public String getRole() { return role; }
-    public void setRole(String role) { this.role = role; }
-
     public String getApprovalStatus() { return approvalStatus; }
     public void setApprovalStatus(String approvalStatus) { this.approvalStatus = approvalStatus; }
 
     public Instant getApprovedAt() { return approvedAt; }
     public void setApprovedAt(Instant approvedAt) { this.approvedAt = approvedAt; }
 
-    public String getApprovedBy() { return approvedBy; }
-    public void setApprovedBy(String approvedBy) { this.approvedBy = approvedBy; }
+    public UUID getApprovedBy() { return approvedBy; }
+    public void setApprovedBy(UUID approvedBy) { this.approvedBy = approvedBy; }
 
     public String getRejectionReason() { return rejectionReason; }
     public void setRejectionReason(String rejectionReason) { this.rejectionReason = rejectionReason; }
@@ -134,20 +104,8 @@ public class DriverRow {
     public Instant getRejectedAt() { return rejectedAt; }
     public void setRejectedAt(Instant rejectedAt) { this.rejectedAt = rejectedAt; }
 
-    public String getRejectedBy() { return rejectedBy; }
-    public void setRejectedBy(String rejectedBy) { this.rejectedBy = rejectedBy; }
-
-    public boolean isBlocked() { return blocked; }
-    public void setBlocked(boolean blocked) { this.blocked = blocked; }
-
-    public String getBlockReason() { return blockReason; }
-    public void setBlockReason(String blockReason) { this.blockReason = blockReason; }
-
-    public Instant getBlockedAt() { return blockedAt; }
-    public void setBlockedAt(Instant blockedAt) { this.blockedAt = blockedAt; }
-
-    public String getBlockedBy() { return blockedBy; }
-    public void setBlockedBy(String blockedBy) { this.blockedBy = blockedBy; }
+    public UUID getRejectedBy() { return rejectedBy; }
+    public void setRejectedBy(UUID rejectedBy) { this.rejectedBy = rejectedBy; }
 
     public String getLanguage() { return language; }
     public void setLanguage(String language) { this.language = language; }

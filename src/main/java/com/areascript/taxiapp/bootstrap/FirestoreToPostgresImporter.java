@@ -4,6 +4,7 @@ import com.areascript.taxiapp.common.firebase.FirebaseProperties;
 import com.areascript.taxiapp.driveradmin.infra.DriverRowRepository;
 import com.areascript.taxiapp.driveradmin.infra.VehicleRowRepository;
 import com.areascript.taxiapp.passenger.infra.PassengerRowRepository;
+import com.areascript.taxiapp.user.infra.UserRowRepository;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import org.slf4j.Logger;
@@ -46,6 +47,7 @@ public class FirestoreToPostgresImporter implements CommandLineRunner {
             Firestore firestore,
             FirebaseProperties firebaseProperties,
             TransactionTemplate transaction,
+            UserRowRepository users,
             DriverRowRepository drivers,
             VehicleRowRepository vehicles,
             PassengerRowRepository passengers,
@@ -53,7 +55,7 @@ public class FirestoreToPostgresImporter implements CommandLineRunner {
         this.firestore = firestore;
         this.timeoutMillis = firebaseProperties.operationTimeout().toMillis();
         this.transaction = transaction;
-        this.importService = new ProfileImportService(drivers, vehicles, passengers);
+        this.importService = new ProfileImportService(users, drivers, vehicles, passengers);
         this.context = context;
     }
 
@@ -71,9 +73,9 @@ public class FirestoreToPostgresImporter implements CommandLineRunner {
         ProfileImportService.Report report = transaction.execute(status ->
                 importService.importProfiles(driverDocs, vehicleDocs, passengerDocs, Instant.now()));
 
-        log.info("ImportDebug | Importación completa: {} conductores, {} vehículos ({} omitidos), "
+        log.info("ImportDebug | Importación completa: {} usuarios, {} conductores, {} vehículos ({} omitidos), "
                         + "{} conductores con vehículo enlazado, {} pasajeros",
-                report.drivers(), report.vehicles(), report.vehiclesSkipped(),
+                report.users(), report.drivers(), report.vehicles(), report.vehiclesSkipped(),
                 report.driversLinkedToVehicle(), report.passengers());
         report.warnings().forEach(warning -> log.warn("ImportDebug | {}", warning));
 

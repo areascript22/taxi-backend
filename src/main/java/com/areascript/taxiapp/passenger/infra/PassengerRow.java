@@ -6,26 +6,20 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.util.UUID;
 
-// Una fila de la tabla `passengers`. Es la representación persistente (JPA);
-// el modelo de negocio del pasajero vivirá en passenger/domain cuando la
-// feature lea de esta tabla.
+// Una fila de la tabla `passengers`: lo PROPIO del pasajero. La identidad
+// (nombre, correo, bloqueo) está en `users`; esta fila cuelga de ella por
+// user_id. El modelo de negocio del pasajero vivirá en passenger/domain cuando
+// la feature lea de esta tabla.
 @Entity
 @Table(name = "passengers")
 public class PassengerRow {
 
+    // También es clave foránea a users(id).
     @Id
-    @Column(name = "uid")
-    private String uid;
-
-    @Column(name = "first_name", nullable = false)
-    private String firstName = "";
-
-    @Column(name = "last_name", nullable = false)
-    private String lastName = "";
-
-    @Column(name = "email", nullable = false)
-    private String email = "";
+    @Column(name = "user_id")
+    private UUID userId;
 
     @Column(name = "photo_url")
     private String photoUrl;
@@ -33,6 +27,7 @@ public class PassengerRow {
     @Column(name = "status", nullable = false)
     private String status = "active";
 
+    // Por instalación de la app del pasajero.
     @Column(name = "language")
     private String language;
 
@@ -48,20 +43,11 @@ public class PassengerRow {
     protected PassengerRow() {
     }
 
-    public PassengerRow(String uid) {
-        this.uid = uid;
+    public PassengerRow(UUID userId) {
+        this.userId = userId;
     }
 
-    public String getUid() { return uid; }
-
-    public String getFirstName() { return firstName; }
-    public void setFirstName(String firstName) { this.firstName = firstName; }
-
-    public String getLastName() { return lastName; }
-    public void setLastName(String lastName) { this.lastName = lastName; }
-
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
+    public UUID getUserId() { return userId; }
 
     public String getPhotoUrl() { return photoUrl; }
     public void setPhotoUrl(String photoUrl) { this.photoUrl = photoUrl; }

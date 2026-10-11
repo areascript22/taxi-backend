@@ -4,6 +4,8 @@ import com.areascript.taxiapp.driveradmin.infra.DriverRow;
 import com.areascript.taxiapp.driveradmin.infra.DriverRowRepository;
 import com.areascript.taxiapp.driveradmin.infra.VehicleRowRepository;
 import com.areascript.taxiapp.passenger.infra.PassengerRowRepository;
+import com.areascript.taxiapp.user.infra.UserRow;
+import com.areascript.taxiapp.user.infra.UserRowRepository;
 import com.google.cloud.Timestamp;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,6 +63,8 @@ class ProfileImportServiceTest {
     }
 
     @Autowired
+    private UserRowRepository users;
+    @Autowired
     private DriverRowRepository drivers;
     @Autowired
     private VehicleRowRepository vehicles;
@@ -73,7 +77,7 @@ class ProfileImportServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new ProfileImportService(drivers, vehicles, passengers);
+        service = new ProfileImportService(users, drivers, vehicles, passengers);
     }
 
     private static Map<String, Object> doc(Object... keyValues) {
@@ -84,12 +88,17 @@ class ProfileImportServiceTest {
         return data;
     }
 
+    private UserRow user(String firebaseUid) {
+        return users.findByFirebaseUid(firebaseUid).orElseThrow();
+    }
+
     @Test
-    void copia_conductores_vehiculos_y_pasajeros_y_enlaza_el_vehiculo() {
+    void copia_identidad_perfiles_y_vehiculo_y_enlaza_todo() {
         var driverDocs = Map.of(
-                "d1", doc("firstName", "Ana", "role", "admin", "approvalStatus", "approved",
+                "d1", doc("firstName", "Ana", "email", "ana@test.com", "role", "admin",
+                        "approvalStatus", "approved",
                         "approvedAt", Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 0),
-                        "approvedBy", "founder", "vehicleId", "v1", "language", "es", "fcmToken", "tok"),
+                        "vehicleId", "v1", "language", "es", "fcmToken", "tok"),
                 "d2", doc("firstName", "Luis"));          // documento viejo, casi vacío
         var vehicleDocs = Map.of("v1", doc("driverId", "d1", "plate", "PBX-1234", "year", 2020L));
         var passengerDocs = Map.of("p1", doc("firstName", "Eva", "email", "eva@test.com"));
@@ -97,6 +106,7 @@ class ProfileImportServiceTest {
         ProfileImportService.Report report =
                 service.importProfiles(driverDocs, vehicleDocs, passengerDocs, IMPORTED_AT);
 
+        assertThat(report.users()).isEqualTo(3);
         assertThat(report.drivers()).isEqualTo(2);
         assertThat(report.vehicles()).isEqualTo(1);
         assertThat(report.vehiclesSkipped()).isZero();
@@ -104,17 +114,56 @@ class ProfileImportServiceTest {
         assertThat(report.passengers()).isEqualTo(1);
         assertThat(report.warnings()).isEmpty();
 
-        assertThat(drivers.count()).isEqualTo(2);
-        DriverRow d1 = drivers.findById("d1").orElseThrow();
-        assertThat(d1.getRole()).isEqualTo("admin");
-        assertThat(d1.getApprovedAt()).isEqualTo(Instant.ofEpochSecond(1_700_000_000L));
-        assertThat(d1.getVehicleId()).isEqualTo("v1");
-        assertThat(d1.getFcmToken()).isEqualTo("tok");
-        assertThat(drivers.findById("d2").orElseThrow().getApprovalStatus())
-                .as("anterior al sistema de aprobación").isEqualTo("approved");
+        UserRow ana = user("d1");
+        assertThat(ana.getRoleCode()).isEqualTo("admin");
+        assertThat(ana.getEmail()).isEqualTo("ana@test.com");
+        DriverRow anaDriver = drivers.findById(ana.getId()).orElseThrow();
+        assertThat(anaDriver.getApprovedAt()).isEqualTo(Instant.ofEpochSecond(1_700_000_000L));
+        assertThat(anaDriver.getVehicleId()).isEqualTo("v1");
+        assertThat(anaDriver.getFcmToken()).isEqualTo("tok");
+        assertThat(vehicles.findById("v1").orElseThrow().getDriverId()).isEqualTo(ana.getId());
 
-        assertThat(vehicles.findById("v1").orElseThrow().getYear()).isEqualTo(2020);
-        assertThat(passengers.findById("p1").orElseThrow().getEmail()).isEqualTo("eva@test.com");
+        assertThat(drivers.findById(user("d2").getId()).orElseThrow().getApprovalStatus())
+                .as("anterior al sistema de aprobación").isEqualTo("approved");
+        assertThat(user("p1").getRoleCode()).isEqualTo("user");
+        assertThat(passengers.findById(user("p1").getId())).isPresent();
+    }
+
+    @Test
+    void una_persona_que_es_conductor_y_pasajero_es_una_sola_fila_en_users() {
+        var driverDocs = Map.of("misma", doc("firstName", "Como Conductor", "fcmToken", "tok-driver"));
+        var passengerDocs = Map.of("misma", doc("firstName", "Como Pasajero", "fcmToken", "tok-passenger"));
+
+        ProfileImportService.Report report =
+                service.importProfiles(driverDocs, Map.of(), passengerDocs, IMPORTED_AT);
+
+        assertThat(report.users()).isEqualTo(1);
+        assertThat(users.count()).isEqualTo(1);
+        UserRow persona = user("misma");
+        assertThat(persona.getFirstName()).as("gana el del conductor").isEqualTo("Como Conductor");
+        // Cada app conserva SU token: el push al pasajero no puede ir a la app del conductor.
+        assertThat(drivers.findById(persona.getId()).orElseThrow().getFcmToken()).isEqualTo("tok-driver");
+        assertThat(passengers.findById(persona.getId()).orElseThrow().getFcmToken()).isEqualTo("tok-passenger");
+    }
+
+    @Test
+    void quien_aprobo_rechazo_o_bloqueo_se_traduce_de_uid_de_firebase_a_users_id() {
+        var driverDocs = Map.of(
+                "founder", doc("firstName", "Fundador", "role", "superuser"),
+                "d1", doc("firstName", "Ana", "approvalStatus", "approved", "approvedBy", "founder",
+                        "isBlocked", true, "blockReason", "Queja", "blockedBy", "founder"),
+                "d2", doc("firstName", "Luis", "approvalStatus", "rejected", "rejectedBy", "founder",
+                        "rejectionReason", "Sin documentos"),
+                "d3", doc("firstName", "Eva", "approvalStatus", "approved", "approvedBy", "ya-no-existe"));
+
+        service.importProfiles(driverDocs, Map.of(), Map.of(), IMPORTED_AT);
+
+        var founderId = user("founder").getId();
+        assertThat(drivers.findById(user("d1").getId()).orElseThrow().getApprovedBy()).isEqualTo(founderId);
+        assertThat(user("d1").getBlockedBy()).isEqualTo(founderId);
+        assertThat(drivers.findById(user("d2").getId()).orElseThrow().getRejectedBy()).isEqualTo(founderId);
+        assertThat(drivers.findById(user("d3").getId()).orElseThrow().getApprovedBy())
+                .as("un admin que ya no existe queda en NULL").isNull();
     }
 
     @Test
@@ -132,15 +181,16 @@ class ProfileImportServiceTest {
         assertThat(report.vehiclesSkipped()).isEqualTo(2);
         assertThat(report.driversLinkedToVehicle()).isZero();
         assertThat(report.warnings()).hasSize(3);
-        assertThat(drivers.findById("d1").orElseThrow().getVehicleId()).isNull();
+        assertThat(drivers.findById(user("d1").getId()).orElseThrow().getVehicleId()).isNull();
         assertThat(vehicles.count()).isZero();
     }
 
     @Test
-    void es_idempotente_y_la_segunda_corrida_actualiza_lo_que_cambio() {
+    void es_idempotente_conserva_el_id_y_actualiza_lo_que_cambio() {
         var driverDocs = Map.of("d1", doc("firstName", "Ana", "vehicleId", "v1"));
         var vehicleDocs = Map.of("v1", doc("driverId", "d1", "plate", "PBX-1234"));
         service.importProfiles(driverDocs, vehicleDocs, Map.of(), IMPORTED_AT);
+        var idAntes = user("d1").getId();
 
         var changedDrivers = Map.of("d1", doc("firstName", "Ana María", "vehicleId", "v1"));
         var changedVehicles = Map.of("v1", doc("driverId", "d1", "plate", "ABC-9999"));
@@ -148,38 +198,68 @@ class ProfileImportServiceTest {
                 service.importProfiles(changedDrivers, changedVehicles, Map.of(), IMPORTED_AT);
 
         assertThat(second.driversLinkedToVehicle()).isEqualTo(1);
-        assertThat(drivers.count()).as("no duplica").isEqualTo(1);
+        assertThat(users.count()).as("no duplica").isEqualTo(1);
+        assertThat(drivers.count()).isEqualTo(1);
         assertThat(vehicles.count()).isEqualTo(1);
-        assertThat(drivers.findById("d1").orElseThrow().getFirstName()).isEqualTo("Ana María");
-        assertThat(drivers.findById("d1").orElseThrow().getVehicleId()).isEqualTo("v1");
+        assertThat(user("d1").getId()).as("conserva su id").isEqualTo(idAntes);
+        assertThat(user("d1").getFirstName()).isEqualTo("Ana María");
+        assertThat(drivers.findById(idAntes).orElseThrow().getVehicleId()).isEqualTo("v1");
         assertThat(vehicles.findById("v1").orElseThrow().getPlate()).isEqualTo("ABC-9999");
     }
 
-    // Las restricciones del esquema son la última defensa: aunque el código
-    // tenga un error, la base se niega a guardar un rol o estado inventado.
+    // ---- Restricciones del esquema: la última defensa ----
+
     @Test
-    void la_base_rechaza_un_rol_inventado() {
+    void la_base_rechaza_un_rol_que_no_esta_en_la_tabla_roles() {
         assertThatThrownBy(() -> jdbc.update(
-                "INSERT INTO drivers (uid, role) VALUES ('x', 'dios')"))
+                "INSERT INTO users (firebase_uid, role_code) VALUES ('x', 'dios')"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void la_base_rechaza_un_estado_de_aprobacion_inventado() {
+        jdbc.update("INSERT INTO users (firebase_uid) VALUES ('x')");
+
         assertThatThrownBy(() -> jdbc.update(
-                "INSERT INTO drivers (uid, approval_status) VALUES ('x', 'quizas')"))
+                "INSERT INTO drivers (user_id, approval_status) "
+                        + "SELECT id, 'quizas' FROM users WHERE firebase_uid = 'x'"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
-    void borrar_un_conductor_borra_sus_vehiculos() {
+    void la_base_rechaza_un_texto_mas_largo_que_su_limite() {
+        String demasiadoLargo = "a".repeat(101);
+
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO users (firebase_uid, first_name) VALUES ('x', ?)", demasiadoLargo))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void la_base_rechaza_dos_usuarios_con_el_mismo_uid_de_firebase() {
+        jdbc.update("INSERT INTO users (firebase_uid) VALUES ('repetido')");
+
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO users (firebase_uid) VALUES ('repetido')"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void borrar_un_usuario_borra_su_perfil_de_conductor_y_sus_vehiculos() {
         service.importProfiles(
                 Map.of("d1", doc("firstName", "Ana")),
                 Map.of("v1", doc("driverId", "d1")),
-                Map.of(), IMPORTED_AT);
+                Map.of("d1", doc("language", "es")), IMPORTED_AT);
 
-        jdbc.update("DELETE FROM drivers WHERE uid = 'd1'");
+        jdbc.update("DELETE FROM users WHERE firebase_uid = 'd1'");
 
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM drivers", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM passengers", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM vehicles", Integer.class)).isZero();
+    }
+
+    @Test
+    void la_tabla_roles_trae_los_tres_roles() {
+        assertThat(jdbc.queryForList("SELECT code FROM roles ORDER BY code", String.class))
+                .containsExactly("admin", "superuser", "user");
     }
 }

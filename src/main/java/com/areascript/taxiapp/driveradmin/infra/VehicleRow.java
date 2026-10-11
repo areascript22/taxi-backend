@@ -6,11 +6,12 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.util.UUID;
 
 // Una fila de la tabla `vehicles`. Ver DriverRow sobre el nombre "Row".
 //
-// driver_uid es una clave foránea a drivers(uid) en la base; acá se guarda como
-// texto (sin @ManyToOne) a propósito: no hace falta navegar el grafo y evita
+// driver_id es una clave foránea a drivers(user_id) en la base; acá se guarda
+// como UUID (sin @ManyToOne) a propósito: no hace falta navegar el grafo y evita
 // cargas perezosas accidentales.
 @Entity
 @Table(name = "vehicles")
@@ -20,8 +21,8 @@ public class VehicleRow {
     @Column(name = "vehicle_id")
     private String vehicleId;
 
-    @Column(name = "driver_uid", nullable = false)
-    private String driverUid;
+    @Column(name = "driver_id", nullable = false)
+    private UUID driverId;
 
     @Column(name = "plate", nullable = false)
     private String plate = "";
@@ -53,14 +54,14 @@ public class VehicleRow {
     protected VehicleRow() {
     }
 
-    public VehicleRow(String vehicleId, String driverUid) {
+    public VehicleRow(String vehicleId, UUID driverId) {
         this.vehicleId = vehicleId;
-        this.driverUid = driverUid;
+        this.driverId = driverId;
     }
 
     public String getVehicleId() { return vehicleId; }
 
-    public String getDriverUid() { return driverUid; }
+    public UUID getDriverId() { return driverId; }
 
     public String getPlate() { return plate; }
     public void setPlate(String plate) { this.plate = plate; }

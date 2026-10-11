@@ -289,7 +289,7 @@ Migración por pasos; el estado real hoy:
 | Paso | Qué | Estado |
 |---|---|---|
 | 1 | Postgres/PostGIS en Docker + Flyway (esquema base) + backups | Hecho. Ninguna feature lee ni escribe en la base todavía. |
-| 2a | Tablas `drivers`, `vehicles`, `passengers` (V2), entidades JPA y copia desde Firestore | Hecho. Se llenan con el importador; nadie las lee todavía. |
+| 2a | Modelo `users` + `roles` + `drivers` / `passengers` / `vehicles` (V2 y V3), entidades JPA y copia desde Firestore | Hecho. Se llenan con el importador; nadie las lee todavía. |
 | 2b | Endpoints de perfil en el servidor y apps escribiendo por ahí (Firestore deja de ser fuente de verdad) | Pendiente |
 | 2c | `DriverRepository`, `DeviceRegistry`, etc. leen de Postgres | Pendiente |
 | 3 | Despacho por cercanía con `ST_DWithin` | Pendiente |
@@ -311,10 +311,29 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d db
 La base nunca publica puertos en producción: Docker se salta `ufw`, así que un
 `ports:` en `db` la expondría a internet aunque el firewall diga que no.
 
-**Entidades JPA.** Son clases `*Row` (`DriverRow`, `VehicleRow`, `PassengerRow`)
-que viven en `infra` y no salen de ahí: el dominio sigue usando sus records
-(`Driver`, `Vehicle`). Hibernate corre con `ddl-auto=validate`: si una entidad no
-coincide con las tablas de Flyway, el servidor no arranca.
+**Modelo de datos.**
+
+```
+roles(code PK)                       user | admin | superuser
+users(id uuid PK, firebase_uid UNIQUE, role_code FK, email, nombres, bloqueo)
+drivers(user_id PK/FK users)         teléfono, calificación, aprobación, token FCM, idioma, vehículo actual
+passengers(user_id PK/FK users)      estado, token FCM, idioma
+vehicles(vehicle_id PK, driver_id FK drivers)
+```
+
+- La identidad interna es `users.id`; `firebase_uid` es la externa. Si cambia el
+  proveedor de autenticación, solo cambia esa columna.
+- **Ser conductor no es un rol**: es tener fila en `drivers`. Una misma cuenta
+  puede tener fila en `drivers` y en `passengers`.
+- El token FCM y el idioma son **por instalación de app**, por eso viven en el
+  perfil de cada una y no en `users`.
+- Todo texto tiene un `CHECK` de longitud y todas las restricciones tienen nombre
+  (`pk_`, `fk_`, `uq_`, `ck_`).
+
+**Entidades JPA.** Son clases `*Row` (`UserRow`, `DriverRow`, `VehicleRow`,
+`PassengerRow`) que viven en `infra` y no salen de ahí: el dominio sigue usando
+sus records (`Driver`, `Vehicle`). Hibernate corre con `ddl-auto=validate`: si una
+entidad no coincide con las tablas de Flyway, el servidor no arranca.
 
 **Copiar los perfiles de Firestore a Postgres.** Una sola corrida, idempotente,
 solo LEE Firestore (ver `bootstrap/FirestoreToPostgresImporter`):
