@@ -1,15 +1,19 @@
 package com.areascript.taxiapp.service;
 
 import com.areascript.taxiapp.account.domain.ActiveRideLookup;
+import com.areascript.taxiapp.chat.domain.ChatRide;
+import com.areascript.taxiapp.chat.domain.ChatRideLookup;
 import com.areascript.taxiapp.common.config.TaxiappProperties;
 import com.areascript.taxiapp.common.error.ConflictException;
 import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.error.ForbiddenException;
 import com.areascript.taxiapp.common.error.NotFoundException;
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
-import com.areascript.taxiapp.notification.application.PushNotificationService;
 import com.areascript.taxiapp.notification.domain.PushMessage;
-import com.google.cloud.Timestamp;
+import com.areascript.taxiapp.notification.domain.PushRoutes;
+import com.areascript.taxiapp.notification.domain.Recipient;
+import com.areascript.taxiapp.notification.domain.UserNotifier;
+import com.areascript.taxiapp.ride.domain.RideAccepted;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.firebase.database.DataSnapshot;
@@ -22,6 +26,7 @@ import com.google.firebase.database.Transaction;
 import com.google.firebase.database.ValueEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 
@@ -29,6 +34,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -38,20 +44,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 @Service
-public class RideService implements ActiveRideLookup {
+public class RideService implements ActiveRideLookup, ChatRideLookup {
 
     private static final Logger log = LoggerFactory.getLogger(RideService.class);
     private static final String TAXI_REQUESTS_PATH = "taxi_requests";
-    private static final String PASSENGERS_COLLECTION = "passengers";
     private static final String DRIVERS_COLLECTION = "drivers";
     private static final String VEHICLES_COLLECTION = "vehicles";
     private static final double EARTH_RADIUS_METERS = 6371000.0;
-
-    // Rutas de push registradas en cada app (ver PushNotificationsService):
-    // deben apuntar a una pantalla que no requiera un objeto `extra`, porque
-    // el payload de un push no puede llevar objetos Dart.
-    private static final String PASSENGER_PUSH_ROUTE = "/ride_tracking";
-    private static final String DRIVER_PUSH_ROUTE = "/booking";
 
     // Tras un status terminal, el nodo se borra pasado
     // taxiapp.rides.terminal-cleanup-delay: margen para que ambas apps -que
@@ -98,36 +97,31 @@ public class RideService implements ActiveRideLookup {
             Pattern.CASE_INSENSITIVE
     );
 
-    // Chat entre pasajero y conductor durante un viaje activo (ver
-    // firebase/firestore.rules para el modelo de datos completo y por qué
-    // se usa rideId -- no passengerId -- como clave del hilo).
-    private static final String CHATS_COLLECTION = "chats";
-    private static final String MESSAGES_SUBCOLLECTION = "messages";
-
     private enum OperationAbortReason { FORBIDDEN, NOT_ALLOWED }
 
     private final FirebaseDatabase firebaseDatabase;
     private final Firestore firestore;
-    private final PushNotificationService pushNotificationService;
+    private final UserNotifier userNotifier;
+    private final ApplicationEventPublisher eventPublisher;
     private final TaskScheduler taskScheduler;
     private final TaxiappProperties.Rides rideSettings;
-    private final TaxiappProperties.Chat chatSettings;
     private final long timeoutMillis;
 
     public RideService(
             FirebaseDatabase firebaseDatabase,
             Firestore firestore,
-            PushNotificationService pushNotificationService,
+            UserNotifier userNotifier,
+            ApplicationEventPublisher eventPublisher,
             TaskScheduler taskScheduler,
             TaxiappProperties properties,
             FirebaseProperties firebaseProperties
     ) {
         this.firebaseDatabase = firebaseDatabase;
         this.firestore = firestore;
-        this.pushNotificationService = pushNotificationService;
+        this.userNotifier = userNotifier;
+        this.eventPublisher = eventPublisher;
         this.taskScheduler = taskScheduler;
         this.rideSettings = properties.rides();
-        this.chatSettings = properties.chat();
         this.timeoutMillis = firebaseProperties.operationTimeout().toMillis();
     }
 
@@ -475,38 +469,18 @@ public class RideService implements ActiveRideLookup {
 
         log.info("RideDebug | Carrera de passengerId={} aceptada por driverUid={}", passengerId, driverUid);
         String rideId = (String) snapshot.child("rideId").getValue();
-        notifyByFcm(
-                PASSENGERS_COLLECTION,
-                passengerId,
+        userNotifier.notifyUser(
+                Recipient.passenger(passengerId),
                 PushMessage.translated(
                         "push.ride.accepted.title",
                         "push.ride.accepted.body",
-                        PASSENGER_PUSH_ROUTE
+                        PushRoutes.PASSENGER_RIDE_TRACKING
                 )
         );
 
-        createChatThread(rideId, passengerId, driverUid);
-    }
-
-    // Habilita el chat de esta carrera: crea el doc padre que
-    // firestore.rules usa para autorizar a los 2 participantes a leer
-    // chats/{rideId}/messages/**. No relanza si falla -- igual que un push
-    // que falla, no debe revertir una carrera ya aceptada; en el peor caso
-    // el chat queda no disponible para esa carrera puntual.
-    private void createChatThread(String rideId, String passengerId, String driverUid) {
-        Map<String, Object> chatData = new HashMap<>();
-        chatData.put("passengerId", passengerId);
-        chatData.put("driverId", driverUid);
-        chatData.put("createdAt", Timestamp.now());
-
-        try {
-            firestore.collection(CHATS_COLLECTION).document(rideId).set(chatData).get(timeoutMillis, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("ChatDebug | Interrumpido al crear el hilo de chat de rideId={}: {}", rideId, e.getMessage(), e);
-        } catch (ExecutionException | TimeoutException e) {
-            log.error("ChatDebug | Error al crear el hilo de chat de rideId={}: {}", rideId, e.getMessage(), e);
-        }
+        // Quien reacciona a que la carrera fue aceptada (hoy, el chat abre su
+        // hilo) se entera por el evento; los listeners no pueden revertirla.
+        eventPublisher.publishEvent(new RideAccepted(rideId, passengerId, driverUid));
     }
 
     // Reemplaza los `.update({'status': 'cancelled', ...})` que antes hacían
@@ -615,24 +589,22 @@ public class RideService implements ActiveRideLookup {
         if ("passenger".equals(cancelledBy)) {
             String assignedDriverId = (String) snapshot.child("driver").child("data").child("id").getValue();
             if (assignedDriverId != null) {
-                notifyByFcm(
-                        DRIVERS_COLLECTION,
-                        assignedDriverId,
+                userNotifier.notifyUser(
+                        Recipient.driver(assignedDriverId),
                         PushMessage.translated(
                                 "push.ride.cancelledByPassenger.title",
                                 "push.ride.cancelledByPassenger.body",
-                                DRIVER_PUSH_ROUTE
+                                PushRoutes.DRIVER_BOOKING
                         )
                 );
             }
         } else {
-            notifyByFcm(
-                    PASSENGERS_COLLECTION,
-                    passengerId,
+            userNotifier.notifyUser(
+                    Recipient.passenger(passengerId),
                     PushMessage.translated(
                             "push.ride.cancelledByDriver.title",
                             "push.ride.cancelledByDriver.body",
-                            PASSENGER_PUSH_ROUTE
+                            PushRoutes.PASSENGER_RIDE_TRACKING
                     )
             );
         }
@@ -750,92 +722,26 @@ public class RideService implements ActiveRideLookup {
         }), CompletableFuture.delayedExecutor(rideSettings.terminalCleanupDelay().toMillis(), TimeUnit.MILLISECONDS));
     }
 
-    // Escribe un mensaje de chat y avisa por push al otro participante.
-    // Deriva el rol (driver/passenger) del propio token verificado, igual
-    // que cancelRide -- el cliente nunca dice quién es, solo manda el texto.
+    // Puerto de la feature chat (ver ChatRideLookup): el chat solo necesita
+    // saber de quién es la carrera, quién es el conductor y si sigue en curso.
     // El rideId lo resuelve el backend desde el nodo de Realtime Database
-    // (fuente de verdad), nunca confía en un rideId que mande el cliente.
-    public void sendChatMessage(String passengerId, String senderUid, String text) {
+    // (fuente de verdad), nunca confía en uno que mande el cliente.
+    @Override
+    public Optional<ChatRide> findByPassenger(String passengerId) {
         DatabaseReference rideRef = firebaseDatabase.getReference(TAXI_REQUESTS_PATH).child(passengerId);
         DataSnapshot snapshot = readSnapshot(rideRef);
         if (snapshot == null || !snapshot.exists()) {
-            throw rideNotFound(passengerId);
+            return Optional.empty();
         }
 
         String status = (String) snapshot.child("status").getValue();
-        if (!ACTIVE_RIDE_STATUSES.contains(status)) {
-            // 'pending' (sin conductor asignado todavía) también cae acá:
-            // el chat solo tiene sentido una vez que hay alguien del otro
-            // lado para leerlo.
-            throw rideAlreadyFinished(passengerId);
-        }
-
         String assignedDriverId = (String) snapshot.child("driver").child("data").child("id").getValue();
-        String senderRole;
-        String recipientCollection;
-        String recipientUid;
-        if (senderUid.equals(passengerId)) {
-            senderRole = "passenger";
-            recipientCollection = DRIVERS_COLLECTION;
-            recipientUid = assignedDriverId;
-        } else if (senderUid.equals(assignedDriverId)) {
-            senderRole = "driver";
-            recipientCollection = PASSENGERS_COLLECTION;
-            recipientUid = passengerId;
-        } else {
-            throw rideForbidden(passengerId);
-        }
-
-        // El controller ya rechazó con 400 un texto null/blank antes de
-        // llamar acá -- lo único que queda por sanear es el largo máximo.
-        String trimmedText = text.trim();
-        if (trimmedText.length() > chatSettings.maxMessageLength()) {
-            trimmedText = trimmedText.substring(0, chatSettings.maxMessageLength());
-        }
-
         String rideId = (String) snapshot.child("rideId").getValue();
-        Timestamp now = Timestamp.now();
-        Timestamp expireAt = Timestamp.ofTimeSecondsAndNanos(
-                now.getSeconds() + chatSettings.retention().toSeconds(),
-                now.getNanos()
-        );
 
-        Map<String, Object> messageData = new HashMap<>();
-        messageData.put("senderId", senderUid);
-        messageData.put("senderRole", senderRole);
-        messageData.put("text", trimmedText);
-        messageData.put("createdAt", now);
-        messageData.put("expireAt", expireAt);
-
-        try {
-            firestore.collection(CHATS_COLLECTION)
-                    .document(rideId)
-                    .collection(MESSAGES_SUBCOLLECTION)
-                    .add(messageData)
-                    .get(timeoutMillis, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("ChatDebug | Interrumpido al enviar mensaje en rideId={}: {}", rideId, e.getMessage(), e);
-            throw new ExternalServiceException("No se pudo enviar el mensaje", e);
-        } catch (ExecutionException | TimeoutException e) {
-            log.error("ChatDebug | Error al enviar mensaje en rideId={}: {}", rideId, e.getMessage(), e);
-            throw new ExternalServiceException("No se pudo enviar el mensaje", e);
-        }
-
-        log.info("ChatDebug | Mensaje enviado en rideId={} por senderRole={}", rideId, senderRole);
-
-        String preview = trimmedText.length() > chatSettings.pushPreviewLength() ? trimmedText.substring(0, chatSettings.pushPreviewLength()) + "…" : trimmedText;
-        notifyByFcm(
-                recipientCollection,
-                recipientUid,
-                PushMessage.withUserText(
-                        "driver".equals(senderRole) ? "push.chat.fromDriver.title" : "push.chat.fromPassenger.title",
-                        preview,
-                        "driver".equals(senderRole) ? PASSENGER_PUSH_ROUTE : DRIVER_PUSH_ROUTE,
-                        "chat_message",
-                        rideId
-                )
-        );
+        // 'pending' (sin conductor asignado todavía) no está en
+        // ACTIVE_RIDE_STATUSES: el chat solo tiene sentido una vez que hay
+        // alguien del otro lado para leerlo.
+        return Optional.of(new ChatRide(rideId, passengerId, assignedDriverId, ACTIVE_RIDE_STATUSES.contains(status)));
     }
 
     // Reemplaza la lectura directa que hacía passenger_app sobre su propio
@@ -927,32 +833,6 @@ public class RideService implements ActiveRideLookup {
             throw new ExternalServiceException("No se pudo consultar el viaje activo", e);
         } catch (ExecutionException | TimeoutException e) {
             throw new ExternalServiceException("No se pudo consultar el viaje activo", e);
-        }
-    }
-
-    private void notifyByFcm(String collection, String documentId, PushMessage payload) {
-        try {
-            DocumentSnapshot snapshot = firestore.collection(collection).document(documentId).get()
-                    .get(timeoutMillis, TimeUnit.MILLISECONDS);
-            if (!snapshot.exists()) {
-                log.warn("RideDebug | No se encontró el documento {}/{} para notificarle", collection, documentId);
-                return;
-            }
-
-            // El idioma sale del mismo snapshot que el token: es el del
-            // destinatario, que es justo lo que no se puede deducir del
-            // request (quien dispara la acción casi nunca es quien recibe el
-            // push). Las apps lo escriben junto al fcmToken.
-            pushNotificationService.send(
-                    snapshot.getString("fcmToken"),
-                    snapshot.getString("language"),
-                    payload
-            );
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("RideDebug | Interrumpido al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
-        } catch (ExecutionException | TimeoutException e) {
-            log.error("RideDebug | Error al notificar a {}/{}: {}", collection, documentId, e.getMessage(), e);
         }
     }
 

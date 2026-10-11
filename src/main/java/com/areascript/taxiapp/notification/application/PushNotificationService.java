@@ -1,8 +1,12 @@
 package com.areascript.taxiapp.notification.application;
 
+import com.areascript.taxiapp.notification.domain.Device;
+import com.areascript.taxiapp.notification.domain.DeviceRegistry;
 import com.areascript.taxiapp.notification.domain.PushContent;
 import com.areascript.taxiapp.notification.domain.PushMessage;
 import com.areascript.taxiapp.notification.domain.PushSender;
+import com.areascript.taxiapp.notification.domain.Recipient;
+import com.areascript.taxiapp.notification.domain.UserNotifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSource;
@@ -14,7 +18,7 @@ import java.util.Locale;
 // Caso de uso "avisar a un usuario": traduce el PushMessage al idioma del
 // destinatario y se lo pasa al PushSender. No conoce Firebase.
 @Service
-public class PushNotificationService {
+public class PushNotificationService implements UserNotifier {
 
     private static final Logger log = LoggerFactory.getLogger(PushNotificationService.class);
 
@@ -26,10 +30,41 @@ public class PushNotificationService {
 
     private final PushSender pushSender;
     private final MessageSource messageSource;
+    private final DeviceRegistry deviceRegistry;
 
-    public PushNotificationService(PushSender pushSender, MessageSource messageSource) {
+    public PushNotificationService(
+            PushSender pushSender,
+            MessageSource messageSource,
+            DeviceRegistry deviceRegistry
+    ) {
         this.pushSender = pushSender;
         this.messageSource = messageSource;
+        this.deviceRegistry = deviceRegistry;
+    }
+
+    // Avisa a un usuario: busca su dispositivo e idioma y le entrega el push.
+    // Es el puerto que usan las demás features (UserNotifier); send(...) queda
+    // para quien ya tiene el token a mano.
+    //
+    // No relanza, igual que send: si no se encuentra al usuario o falla la
+    // búsqueda, se registra y se sigue (una carrera ya aceptada no se revierte
+    // porque la notificación no llegó).
+    @Override
+    public void notifyUser(Recipient recipient, PushMessage message) {
+        Device device;
+        try {
+            device = deviceRegistry.findDevice(recipient).orElse(null);
+        } catch (RuntimeException e) {
+            log.error("NotificationDebug | No se pudo notificar a {}/{}: {}", recipient.kind(), recipient.uid(), e.getMessage(), e);
+            return;
+        }
+
+        if (device == null) {
+            log.warn("NotificationDebug | No se encontró el destinatario {}/{} para notificarle", recipient.kind(), recipient.uid());
+            return;
+        }
+
+        send(device.deviceToken(), device.language(), message);
     }
 
     // `language` es el del DESTINATARIO ('es'/'en', como lo guardan las apps

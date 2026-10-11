@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.dto;
+package com.areascript.taxiapp.chat.api;
 
 public record SendChatMessageRequest(String text) {
 }

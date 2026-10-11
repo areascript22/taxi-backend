@@ -1,10 +1,8 @@
 package com.areascript.taxiapp.controller;
 
-import com.areascript.taxiapp.common.error.InvalidInputException;
 import com.areascript.taxiapp.common.security.AuthenticatedUser;
 import com.areascript.taxiapp.dto.AcceptRideRequest;
 import com.areascript.taxiapp.dto.RequestRideRequest;
-import com.areascript.taxiapp.dto.SendChatMessageRequest;
 import com.areascript.taxiapp.service.RideService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -98,24 +96,6 @@ public class RideController {
             @AuthenticationPrincipal AuthenticatedUser user
     ) {
         rideService.completeTrip(passengerId, user.uid());
-        return ResponseEntity.noContent().build();
-    }
-
-    // Mensajería de chat entre pasajero y conductor durante un viaje activo.
-    // Mismo criterio que cancelRide/completeTrip: el rol de quien escribe
-    // (driver/passenger) se deriva del uid del token verificado, nunca del
-    // cliente, y el push a la otra parte lo dispara el backend.
-    @PostMapping("/{passengerId}/messages")
-    public ResponseEntity<Void> sendChatMessage(
-            @PathVariable String passengerId,
-            @RequestBody SendChatMessageRequest body,
-            @AuthenticationPrincipal AuthenticatedUser user
-    ) {
-        if (body.text() == null || body.text().isBlank()) {
-            throw new InvalidInputException("El mensaje no puede estar vacío");
-        }
-
-        rideService.sendChatMessage(passengerId, user.uid(), body.text());
         return ResponseEntity.noContent().build();
     }
 

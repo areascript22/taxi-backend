@@ -1,16 +1,24 @@
 package com.areascript.taxiapp.notification.application;
 
+import com.areascript.taxiapp.common.error.ExternalServiceException;
+import com.areascript.taxiapp.notification.domain.Device;
+import com.areascript.taxiapp.notification.domain.DeviceRegistry;
 import com.areascript.taxiapp.notification.domain.PushContent;
 import com.areascript.taxiapp.notification.domain.PushMessage;
 import com.areascript.taxiapp.notification.domain.PushSender;
+import com.areascript.taxiapp.notification.domain.Recipient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.ResourceBundleMessageSource;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 // Traducción y control de flujo. Con el puerto PushSender en el dominio esto
 // ya es un test sin Firebase: el "sender" es una lista, y se puede afirmar
@@ -28,11 +36,20 @@ class PushNotificationServiceTest {
     }
 
     private final List<Delivery> deliveries = new ArrayList<>();
+    private final Map<Recipient, Device> devices = new HashMap<>();
+    private RuntimeException registryFailure;
     private PushNotificationService service;
 
     @BeforeEach
     void setUp() {
         PushSender recordingSender = (deviceToken, content) -> deliveries.add(new Delivery(deviceToken, content));
+
+        DeviceRegistry registry = recipient -> {
+            if (registryFailure != null) {
+                throw registryFailure;
+            }
+            return Optional.ofNullable(devices.get(recipient));
+        };
 
         // Misma configuración que arma Spring Boot a partir de application.properties.
         ResourceBundleMessageSource messageSource = new ResourceBundleMessageSource();
@@ -40,8 +57,60 @@ class PushNotificationServiceTest {
         messageSource.setDefaultEncoding("UTF-8");
         messageSource.setFallbackToSystemLocale(false);
 
-        service = new PushNotificationService(recordingSender, messageSource);
+        service = new PushNotificationService(recordingSender, messageSource, registry);
     }
+
+    // ---- notifyUser: busca el dispositivo y el idioma del destinatario ----
+
+    @Test
+    void notifyUser_usa_el_token_y_el_idioma_del_destinatario() {
+        devices.put(Recipient.passenger("p1"), new Device("fcm-p1", "en"));
+
+        service.notifyUser(Recipient.passenger("p1"), RIDE_ACCEPTED);
+
+        assertThat(deliveries).hasSize(1);
+        assertThat(deliveries.get(0).deviceToken()).isEqualTo("fcm-p1");
+        assertThat(deliveries.get(0).content().title()).isEqualTo("Ride accepted!");
+    }
+
+    // El mismo uid puede existir como conductor y como pasajero.
+    @Test
+    void notifyUser_distingue_conductor_de_pasajero() {
+        devices.put(Recipient.passenger("u1"), new Device("fcm-pasajero", "es"));
+        devices.put(Recipient.driver("u1"), new Device("fcm-conductor", "es"));
+
+        service.notifyUser(Recipient.driver("u1"), RIDE_ACCEPTED);
+
+        assertThat(deliveries).extracting(Delivery::deviceToken).containsExactly("fcm-conductor");
+    }
+
+    @Test
+    void notifyUser_sin_destinatario_no_envia_ni_relanza() {
+        service.notifyUser(Recipient.driver("nadie"), RIDE_ACCEPTED);
+
+        assertThat(deliveries).isEmpty();
+    }
+
+    @Test
+    void notifyUser_con_destinatario_sin_token_no_envia() {
+        devices.put(Recipient.driver("d1"), new Device(null, "es"));
+
+        service.notifyUser(Recipient.driver("d1"), RIDE_ACCEPTED);
+
+        assertThat(deliveries).isEmpty();
+    }
+
+    // Un fallo al buscar al destinatario no debe tumbar el flujo que notifica.
+    @Test
+    void notifyUser_si_falla_la_busqueda_no_relanza() {
+        registryFailure = new ExternalServiceException("firestore caído", new RuntimeException());
+
+        assertThatCode(() -> service.notifyUser(Recipient.driver("d1"), RIDE_ACCEPTED))
+                .doesNotThrowAnyException();
+        assertThat(deliveries).isEmpty();
+    }
+
+    // ---- send: ya con el token a mano ----
 
     @Test
     void entrega_el_push_en_el_idioma_del_destinatario() {
