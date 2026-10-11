@@ -3,6 +3,7 @@
 #
 #   Servidor:    docker compose up -d
 #   Desarrollo:  docker compose -f compose.yaml -f compose.dev.yaml up -d db
+#   Panel web:   docker compose up -d db pgadmin     (ver el servicio pgadmin)
 #
 # Las variables salen de .env (ver .env.example). Presupuesto de memoria:
 #   db  ~640 MB  +  app ~900 MB  +  sistema/Docker/Caddy ~400 MB  =  ~1,9 GB
@@ -79,5 +80,41 @@ services:
     mem_limit: 900m
     logging: *log-rotation
 
+  # Panel web para ver y consultar las tablas. Es una HERRAMIENTA, no parte del
+  # servicio: está en el perfil "tools", así que `docker compose up -d` NO lo
+  # levanta (gasta ~250 MB que el droplet no tiene de sobra). Se pide por nombre:
+  #
+  #   docker compose up -d db pgadmin
+  #
+  # SEGURIDAD: solo escucha en 127.0.0.1 (nunca en internet; Docker se salta ufw).
+  # En el servidor se entra por un túnel SSH, ver ops/README.md sección 6.
+  pgadmin:
+    image: dpage/pgadmin4:8.14
+    container_name: taxiapp-pgadmin
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # El correo y la contraseña con los que se inicia sesión en el panel. Sin
+      # valor por defecto: si faltan, pgAdmin no arranca.
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      # Sin pantalla de "actualizaciones disponibles" ni peticiones a internet.
+      PGADMIN_CONFIG_CHECK_UPDATES: "False"
+      # Sin la política de contraseña maestra: ya hay login en el panel.
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      # Registra la base como servidor la primera vez (solo con el volumen
+      # vacío). La contraseña de la base NO va aquí: se escribe una vez en el panel.
+      - ./ops/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    ports:
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
+    mem_limit: 400m
+    logging: *log-rotation
+
 volumes:
   pgdata:
+  pgadmin-data:

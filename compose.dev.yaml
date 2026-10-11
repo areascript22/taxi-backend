@@ -17,3 +17,9 @@ services:
     # Solo loopback: la base de tu PC no queda expuesta a la red local.
     ports:
       - "127.0.0.1:${DB_HOST_PORT:-5442}:5432"
+
+  # Credenciales del panel SOLO para tu PC (http://localhost:5050).
+  pgadmin:
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-taxiapp_dev}

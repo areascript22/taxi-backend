@@ -98,6 +98,30 @@ Docker publica puertos saltándose `ufw`. Por eso `compose.yaml` solo publica
 `db`. Para acceso a la base, entra por SSH y usa `docker exec -it taxiapp-db
 psql -U taxiapp -d taxiapp`.
 
+## 6b. Panel web de la base (pgAdmin)
+
+Está en `compose.yaml` bajo el perfil `tools`: **no arranca con `docker compose
+up -d`**. Se levanta cuando haga falta y se baja al terminar (gasta ~250 MB):
+
+```bash
+docker compose up -d db pgadmin     # levantar
+docker compose stop pgadmin         # bajar (los datos del panel se conservan)
+```
+
+Requiere `PGADMIN_DEFAULT_EMAIL` y `PGADMIN_DEFAULT_PASSWORD` en `.env`.
+
+Solo escucha en `127.0.0.1:5050` del droplet. **No lo expongas con Caddy ni
+abras el puerto**: un panel de base de datos en internet es un blanco constante.
+Desde tu PC, entra por un túnel SSH:
+
+```powershell
+ssh -L 5050:127.0.0.1:5050 usuario@IP_DEL_DROPLET
+# con la sesión abierta, en tu navegador: http://localhost:5050
+```
+
+La primera vez, la base ya aparece registrada como "TaxiGo (Postgres)"; al
+abrirla pide la contraseña de la base (`POSTGRES_PASSWORD`).
+
 ## 7. Desarrollo local
 
 ```bash
