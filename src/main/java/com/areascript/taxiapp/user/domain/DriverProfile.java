@@ -8,6 +8,8 @@ public record DriverProfile(
         double rating,
         String approvalStatus,
         String language,
-        VehicleSummary vehicle
+        VehicleSummary vehicle,
+        boolean online,
+        boolean onRide
 ) {
 }

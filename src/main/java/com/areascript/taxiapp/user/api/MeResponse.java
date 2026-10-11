@@ -24,7 +24,9 @@ public record MeResponse(
             double rating,
             String approvalStatus,
             String language,
-            Vehicle vehicle
+            Vehicle vehicle,
+            boolean online,
+            boolean onRide
     ) {
     }
 
@@ -75,7 +77,9 @@ public record MeResponse(
                         vehicle.year(),
                         vehicle.color(),
                         vehicle.registrationNumber(),
-                        vehicle.verificationStatus()));
+                        vehicle.verificationStatus()),
+                profile.online(),
+                profile.onRide());
     }
 
     private static Passenger passenger(PassengerProfile profile) {

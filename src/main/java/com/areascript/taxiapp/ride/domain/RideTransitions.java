@@ -217,6 +217,35 @@ public final class RideTransitions {
         return RideChange.update(fields);
     }
 
+    // Publica la posición del conductor en el nodo de la carrera (la lee el
+    // mapa del pasajero). Solo el conductor ASIGNADO y solo mientras la carrera
+    // está en curso.
+    //
+    // Es una regla y no una escritura directa a propósito: si la carrera se
+    // canceló y su nodo ya no existe, una escritura directa crearía un nodo
+    // fantasma (taxi_requests/{id}/driver/location) que los conductores verían
+    // como una solicitud. Con la carrera ausente la regla no escribe nada.
+    //
+    // Escribe solo la ubicación: no toca el estado ni `updatedAt`, que significa
+    // "el estado cambió".
+    public static RideChange updateDriverLocation(Ride current, String driverUid, double latitude, double longitude) {
+        if (current == null) {
+            return RideChange.unchanged();
+        }
+        if (!current.isInProgress()) {
+            return RideChange.rejected(NOT_ALLOWED);
+        }
+        if (!driverUid.equals(current.driverId())) {
+            return RideChange.rejected(FORBIDDEN);
+        }
+
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("driver/location/latitude", latitude);
+        fields.put("driver/location/longitude", longitude);
+        fields.put("driver/location/updatedAt", ServerTime.NOW);
+        return RideChange.update(fields);
+    }
+
     // Borra la carrera, pero solo si sigue en un estado terminal: no pisa una
     // solicitud nueva que el pasajero haya creado en la misma clave mientras
     // tanto.

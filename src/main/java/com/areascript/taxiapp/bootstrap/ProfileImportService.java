@@ -107,9 +107,19 @@ class ProfileImportService {
         users.flush();
 
         // 2) drivers: cuelgan del users.id de su persona.
+        // Los conductores que ya existen se ACTUALIZAN en vez de reemplazarse:
+        // Firestore no sabe de su presencia (en línea / en carrera) y recrear la
+        // fila los pondría fuera de línea a todos en cada reimportación.
+        Map<UUID, DriverRow> existingDrivers = new HashMap<>();
+        List<UUID> driverIds = new ArrayList<>();
+        driverDocs.keySet().forEach(uid -> driverIds.add(savedUsers.get(uid).getId()));
+        drivers.findAllById(driverIds).forEach(row -> existingDrivers.put(row.getUserId(), row));
+
         List<DriverRow> driverRows = new ArrayList<>();
         driverDocs.forEach((uid, data) -> {
-            DriverRow row = FirestoreProfileMapper.toDriver(savedUsers.get(uid).getId(), data, importedAt);
+            UUID userId = savedUsers.get(uid).getId();
+            DriverRow row = existingDrivers.getOrDefault(userId, new DriverRow(userId));
+            FirestoreProfileMapper.fillDriver(row, data, importedAt);
             row.setApprovedBy(resolveActor(FirestoreProfileMapper.nullableText(data, "approvedBy"), savedUsers));
             row.setRejectedBy(resolveActor(FirestoreProfileMapper.nullableText(data, "rejectedBy"), savedUsers));
             driverRows.add(row);

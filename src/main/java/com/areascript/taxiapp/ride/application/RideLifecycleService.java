@@ -18,6 +18,7 @@ import com.areascript.taxiapp.ride.domain.NewRide;
 import com.areascript.taxiapp.ride.domain.PickupLocation;
 import com.areascript.taxiapp.ride.domain.Ride;
 import com.areascript.taxiapp.ride.domain.RideAccepted;
+import com.areascript.taxiapp.ride.domain.RideEnded;
 import com.areascript.taxiapp.ride.domain.RideOutcome;
 import com.areascript.taxiapp.ride.domain.RideRepository;
 import com.areascript.taxiapp.ride.domain.RideStatus;
@@ -290,6 +291,12 @@ public class RideLifecycleService {
         }
 
         scheduleCleanup(passengerId);
+
+        // Si ya habia conductor, queda libre: quien reacciona (el despacho) se
+        // entera por el evento.
+        if (ride.driverId() != null) {
+            events.publishEvent(new RideEnded(ride.rideId(), passengerId, ride.driverId()));
+        }
     }
 
     // El conductor asignado avisa que llegó al punto de recogida. Antes la app
@@ -348,6 +355,8 @@ public class RideLifecycleService {
 
         log.info("RideDebug | Viaje de passengerId={} finalizado por driverUid={}", passengerId, driverUid);
         scheduleCleanup(passengerId);
+
+        events.publishEvent(new RideEnded(ride.rideId(), passengerId, driverUid));
     }
 
     // Borra el nodo unos segundos después de llegar a un estado terminal, una

@@ -17,4 +17,9 @@ public class FakeUserStoreConfig {
     public FakeUserProfiles fakeUserProfiles() {
         return new FakeUserProfiles();
     }
+
+    @Bean
+    public FakeDriverPresence fakeDriverPresence() {
+        return new FakeDriverPresence();
+    }
 }

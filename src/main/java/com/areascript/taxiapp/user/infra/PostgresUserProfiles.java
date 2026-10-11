@@ -108,7 +108,9 @@ public class PostgresUserProfiles implements UserProfiles {
                 row.getRating(),
                 row.getApprovalStatus(),
                 row.getLanguage(),
-                vehicle);
+                vehicle,
+                row.isOnline(),
+                row.isOnRide());
     }
 
     private static VehicleSummary toVehicle(VehicleRow row) {

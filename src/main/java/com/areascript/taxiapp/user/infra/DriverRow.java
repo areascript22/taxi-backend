@@ -65,6 +65,14 @@ public class DriverRow {
     @Column(name = "vehicle_id")
     private String vehicleId;
 
+    // Presencia (V5). Los pone el conductor (is_online) y el servidor (on_ride);
+    // NUNCA la importacion desde Firestore, que no sabe nada de esto.
+    @Column(name = "is_online", nullable = false)
+    private boolean online;
+
+    @Column(name = "on_ride", nullable = false)
+    private boolean onRide;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -112,6 +120,12 @@ public class DriverRow {
 
     public String getFcmToken() { return fcmToken; }
     public void setFcmToken(String fcmToken) { this.fcmToken = fcmToken; }
+
+    public boolean isOnline() { return online; }
+    public void setOnline(boolean online) { this.online = online; }
+
+    public boolean isOnRide() { return onRide; }
+    public void setOnRide(boolean onRide) { this.onRide = onRide; }
 
     public String getVehicleId() { return vehicleId; }
     public void setVehicleId(String vehicleId) { this.vehicleId = vehicleId; }

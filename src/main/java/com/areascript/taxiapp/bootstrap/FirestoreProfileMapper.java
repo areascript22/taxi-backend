@@ -76,7 +76,12 @@ final class FirestoreProfileMapper {
 
     // approvedBy / rejectedBy los completa ProfileImportService.
     static DriverRow toDriver(UUID userId, Map<String, Object> data, Instant importedAt) {
-        DriverRow row = new DriverRow(userId);
+        return fillDriver(new DriverRow(userId), data, importedAt);
+    }
+
+    // Completa los campos que vienen de Firestore y NO toca los que no: la
+    // presencia (is_online, on_ride) y el vehículo actual, que se enlaza aparte.
+    static DriverRow fillDriver(DriverRow row, Map<String, Object> data, Instant importedAt) {
         row.setPhoneNumber(text(data, "phoneNumber"));
         row.setPhotoUrl(nullableText(data, "photoUrl"));
         row.setRating(rating(data.get("rating")));

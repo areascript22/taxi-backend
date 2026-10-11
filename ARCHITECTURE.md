@@ -21,6 +21,7 @@ negocio, solo tiene el esquema base de Flyway.
 | `driveradmin` | Panel de administración: listar, aprobar/rechazar, bloquear, cambiar rol y eliminar conductores | `GET /api/drivers`<br>`GET /api/drivers/{uid}`<br>`PUT /api/drivers/{uid}/role`<br>`PUT /api/drivers/{uid}/approval-status`<br>`PUT /api/drivers/{uid}/block-status`<br>`DELETE /api/drivers/{uid}` |
 | `appversion` | Decir si una versión de una app todavía se admite (versión mínima por app) | `GET /api/public/app-version?app=driver&version=1.0.7` — **público**, sin token |
 | `user` | Quién es la persona (identidad y rol guardados en Postgres) y sus perfiles de conductor y pasajero | `GET /api/me`<br>`PUT /api/me/device` |
+| `dispatch` | Presencia de los conductores (en línea, ocupado, dónde están) y, más adelante, a quién se le ofrece un pedido | `PUT /api/me/driver/availability`<br>`PUT /api/me/driver/location` |
 | `notification` | Traducir y entregar notificaciones push | (ninguno: lo usan las demás features) |
 | `identity` | La cuenta de autenticación (roles, borrado) | (ninguno) |
 | `common` | Errores, configuración, seguridad, Firebase | (ninguno) |
@@ -312,6 +313,8 @@ Migración por pasos; el estado real hoy:
 | 2a | Modelo `users` + `roles` + `drivers` / `passengers` / `vehicles` (V2 y V3), entidades JPA y copia desde Firestore | Hecho. Se llenan con el importador; nadie las lee todavía. |
 | 2b | Endpoints de perfil en el servidor y apps escribiendo por ahí (Firestore deja de ser fuente de verdad) | Pendiente |
 | 2c | `DriverRepository`, `DeviceRegistry`, etc. leen de Postgres | Pendiente |
+| 3a | Presencia de conductores y ubicación en PostGIS (V5): interruptor en línea, ubicación, ocupado/libre derivado de la carrera, consulta por radio | Hecho. Falta el despacho por anillos que la use. |
+| 3b | Despacho por anillos y bandeja de ofertas por conductor | Pendiente |
 | 3 | Despacho por cercanía con `ST_DWithin` | Pendiente |
 
 La carrera en curso sigue en Realtime Database; el chat, en Firestore.
@@ -349,6 +352,43 @@ vehicles(vehicle_id PK, driver_id FK drivers)
   perfil de cada una y no en `users`.
 - Todo texto tiene un `CHECK` de longitud y todas las restricciones tienen nombre
   (`pk_`, `fk_`, `uq_`, `ck_`).
+
+**Presencia de los conductores (V5).** Lo que el despacho consulta para saber a
+quién ofrecerle un pedido:
+
+```
+drivers.is_online      lo pone el CONDUCTOR (interruptor de la app)
+drivers.on_ride        lo pone el SERVIDOR: al aceptar (RideAccepted) y al terminar (RideEnded)
+driver_locations       última posición, UNA fila por conductor, geography(Point,4326) + índice GiST
+```
+
+"Disponible" = en línea **y** no en carrera **y** ubicación reciente
+(`dispatch_settings.location_max_age_seconds`). El cliente nunca dice "estoy
+libre": ocupado/libre lo deriva el servidor del ciclo de la carrera.
+
+**Un solo endpoint de ubicación, dos destinos** (`PUT /api/me/driver/location`).
+La app no cambia de endpoint; el servidor decide:
+
+| Situación | Destino | Por qué |
+|---|---|---|
+| Sin carrera (`passengerId` ausente) | Postgres `driver_locations` | El despacho busca al más cercano |
+| En carrera (`passengerId`) | Nodo de la carrera en RTDB (`driver/location`) | Lo lee el mapa del pasajero; ocupado no recibe pedidos, así que no se escribe en Postgres |
+
+La escritura al nodo pasa por `RideTransitions.updateDriverLocation` (una regla
+atómica): si la carrera ya no existe no se escribe nada, así no aparece un nodo
+fantasma que los conductores verían como una solicitud.
+
+**Marcas colgadas.** Si se pierde un evento (el servidor se reinició a mitad),
+`on_ride` puede quedar en `true` sin carrera. Se corrige solo: al ponerse en
+línea y al reportar ubicación se confirma contra la carrera real (una sola vez,
+solo en ese caso raro). Quien deja de reportar sale del despacho por la
+frescura, sin detectar "desconexiones".
+
+**Límite conocido de esta etapa.** La aprobación y el bloqueo todavía viven en
+Firestore y no se reflejan en Postgres. Se exigen al ponerse en línea y al
+aceptar, pero `findAvailableNear` aún no los filtra: un conductor bloqueado
+estando en línea podría recibir una oferta (el accept lo rechaza). Cuando
+`DriverRepository` pase a Postgres se agrega el filtro.
 
 **Configuración del despacho (V4).** Lo que decide a quién se le ofrece un pedido
 vive en la base y lo edita un administrador, sin desplegar:

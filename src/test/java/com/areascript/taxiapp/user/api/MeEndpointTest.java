@@ -53,7 +53,8 @@ class MeEndpointTest extends CharacterizationTestBase {
         String token = adminToken("ana");
         userProfiles.putDriver(idOf("ana"), new DriverProfile(
                 "0991112222", "https://p/ana.jpg", 4.5, "approved", "es",
-                new VehicleSummary("v1", "PBX-1234", "Toyota", "Corolla", 2020, "Amarillo", "REG-1", "pending")));
+                new VehicleSummary("v1", "PBX-1234", "Toyota", "Corolla", 2020, "Amarillo", "REG-1", "pending"),
+                true, false));
         userProfiles.putPassenger(idOf("ana"), new PassengerProfile(null, "active", "en"));
 
         mvc.perform(get("/api/me").header("Authorization", token))
@@ -108,7 +109,7 @@ class MeEndpointTest extends CharacterizationTestBase {
 
     @Test
     void registra_el_dispositivo_en_la_base_y_en_firestore() throws Exception {
-        userProfiles.putDriver(idOf("c1"), new DriverProfile("", null, 5.0, "approved", null, null));
+        userProfiles.putDriver(idOf("c1"), new DriverProfile("", null, 5.0, "approved", null, null, false, false));
         firestore.put("drivers/c1", Map.of("firstName", "Uno"));
 
         mvc.perform(put("/api/me/device").header("Authorization", userToken("c1"))
@@ -126,7 +127,7 @@ class MeEndpointTest extends CharacterizationTestBase {
     // Una persona con las dos apps tiene dos dispositivos: cada app escribe el suyo.
     @Test
     void el_token_de_cada_app_va_a_su_propio_perfil() throws Exception {
-        userProfiles.putDriver(idOf("dual"), new DriverProfile("", null, 5.0, "approved", null, null));
+        userProfiles.putDriver(idOf("dual"), new DriverProfile("", null, 5.0, "approved", null, null, false, false));
         userProfiles.putPassenger(idOf("dual"), new PassengerProfile(null, "active", null));
         firestore.put("drivers/dual", Map.of("firstName", "D"));
         firestore.put("passengers/dual", Map.of("firstName", "P"));
