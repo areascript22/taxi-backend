@@ -99,6 +99,21 @@ class ArchitectureRulesTest {
         }
     }
 
+    // El SDK de Firebase vive solo en infra (y en la configuración y la
+    // seguridad comunes). `bootstrap` es el script de una sola corrida
+    // ApprovalStatusBackfill, que se borra cuando ya se ejecutó en producción.
+    @Test
+    void el_sdk_de_firebase_solo_se_usa_en_infra_y_common() {
+        ArchRule rule = noClasses()
+                .that().resideOutsideOfPackages("..infra..", "..common..", "..bootstrap..")
+                .should().dependOnClassesThat().resideInAnyPackage(
+                        "com.google.firebase..",
+                        "com.google.cloud.firestore..",
+                        "com.google.cloud.storage.."
+                );
+        rule.check(classes);
+    }
+
     // La capa api (controllers y arranque) no toca Firebase: pasa por los
     // casos de uso. El SDK vive solo en infra y en common.
     @Test
