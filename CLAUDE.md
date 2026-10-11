@@ -80,8 +80,8 @@ atómica y puede reejecutarla, así que **no puede tener efectos secundarios**.
 - Comentarios que explican el **porqué**, no el qué.
 - Logs con prefijo de contexto: `RideDebug |`, `ChatDebug |`,
   `DriverAdminDebug |`, `AccountDebug |`, `NotificationDebug |`,
-  `IdentityDebug |`, `AuthDebug |`, `ErrorDebug |`. Un feature nuevo crea el
-  suyo (`<Feature>Debug |`).
+  `IdentityDebug |`, `AuthDebug |`, `AppVersionDebug |`, `ErrorDebug |`. Un
+  feature nuevo crea el suyo (`<Feature>Debug |`).
 - Los contratos JSON con las apps (nombres de campos, URLs, códigos de estado)
   **no se cambian** sin cambiar las apps. Los `*Response` conservan los nombres
   que lee Flutter.

@@ -83,7 +83,8 @@ class ArchitectureRulesTest {
     // una feature y no se rigen por esta regla.
     @Test
     void las_features_solo_se_conocen_por_su_dominio() {
-        List<String> features = List.of("notification", "identity", "account", "driveradmin", "chat", "ride");
+        List<String> features =
+                List.of("notification", "identity", "account", "driveradmin", "chat", "ride", "appversion");
 
         for (String feature : features) {
             String[] othersInternals = features.stream()

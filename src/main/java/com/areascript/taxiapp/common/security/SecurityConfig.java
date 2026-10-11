@@ -47,6 +47,10 @@ public class SecurityConfig {
                 .logout(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> requests
+                        // Lo único público de la API: la consulta de versión
+                        // mínima, que las apps hacen antes de iniciar sesión.
+                        // Va antes de /api/** porque se evalúa en orden.
+                        .requestMatchers("/api/public/**").permitAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll())
                 .exceptionHandling(handling -> handling

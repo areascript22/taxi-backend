@@ -18,6 +18,7 @@ Admin SDK.
 | `chat` | Mensajes entre pasajero y conductor durante un viaje | `POST /api/rides/{passengerId}/messages` |
 | `account` | Que un usuario borre su propia cuenta | `DELETE /api/account` |
 | `driveradmin` | Panel de administración: listar, aprobar/rechazar, bloquear, cambiar rol y eliminar conductores | `GET /api/drivers`<br>`GET /api/drivers/{uid}`<br>`PUT /api/drivers/{uid}/role`<br>`PUT /api/drivers/{uid}/approval-status`<br>`PUT /api/drivers/{uid}/block-status`<br>`DELETE /api/drivers/{uid}` |
+| `appversion` | Decir si una versión de una app todavía se admite (versión mínima por app) | `GET /api/public/app-version?app=driver&version=1.0.7` — **público**, sin token |
 | `notification` | Traducir y entregar notificaciones push | (ninguno: lo usan las demás features) |
 | `identity` | La cuenta de autenticación (roles, borrado) | (ninguno) |
 | `common` | Errores, configuración, seguridad, Firebase | (ninguno) |
@@ -157,7 +158,9 @@ Todas las excepciones propias extienden `AppException` y declaran su `ErrorType`
 ## 6. Seguridad
 
 Spring Security sin estado (sin sesión, cookies ni CSRF). Todo `/api/**` exige
-un ID token de Firebase; el resto no exige nada.
+un ID token de Firebase, **salvo `/api/public/**`** (hoy solo la consulta de
+versión mínima, que las apps hacen antes de iniciar sesión). Fuera de `/api/**`
+no se exige nada.
 
 | Authority | De dónde sale | Para qué |
 |---|---|---|
@@ -184,6 +187,17 @@ participante de un chat) no son roles del token: los decide el caso de uso.
 | `taxiapp.rides.terminal-cleanup-delay` | | Cuánto tarda en borrarse una carrera terminada (10 s) |
 | `taxiapp.chat.*` | | Largo máximo, largo del preview del push, retención (7 d) |
 | `taxiapp.admin.founder-uid` / `founder-email` | `TAXIAPP_ADMIN_FOUNDER_UID` / `..._EMAIL` | La cuenta dueña del proyecto |
+| `taxiapp.app-versions.{driver,passenger}.min-version` | `TAXIAPP_APPVERSIONS_DRIVER_MINVERSION`, `..._PASSENGER_...` | Versión mínima que admite el servidor (por defecto `0.0.0`: no bloquea a nadie) |
+| `taxiapp.app-versions.{driver,passenger}.store-url` | | Dónde se descarga la app, para la pantalla de "actualiza" |
+
+### Subir la versión mínima
+
+Hacerlo **solo** cuando un cambio del servidor deje de ser compatible con las
+apps viejas, y **después** de publicar la versión nueva en la tienda. No hace
+falta publicar nada en las apps: se cambia la variable de entorno y se reinicia.
+Las apps que no logran consultar (sin red, servidor caído) **no se bloquean**:
+solo se corta el paso cuando el servidor dice explícitamente que la versión es
+vieja.
 
 Los secretos **no se versionan**: `secrets/` está en `.gitignore`. En local, el
 fundador va en `secrets/taxiapp-secrets.properties`. El servidor tiene que
