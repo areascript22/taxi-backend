@@ -14,7 +14,7 @@ Admin SDK.
 
 | Feature | Responsabilidad | Endpoints |
 |---|---|---|
-| `ride` | Ciclo de vida de una carrera: pedir, aceptar, cancelar, finalizar, vencer, consultar el viaje activo | `POST /api/rides/request`<br>`POST /api/rides/{passengerId}/accept`<br>`POST /api/rides/{passengerId}/cancel`<br>`POST /api/rides/{passengerId}/complete`<br>`GET /api/rides/passenger/active`<br>`GET /api/rides/driver/active` |
+| `ride` | Ciclo de vida de una carrera: pedir, aceptar, cancelar, finalizar, vencer, consultar el viaje activo | `POST /api/rides/request`<br>`POST /api/rides/{passengerId}/accept`<br>`POST /api/rides/{passengerId}/arrived`<br>`POST /api/rides/{passengerId}/start`<br>`POST /api/rides/{passengerId}/cancel`<br>`POST /api/rides/{passengerId}/complete`<br>`GET /api/rides/passenger/active`<br>`GET /api/rides/driver/active` |
 | `chat` | Mensajes entre pasajero y conductor durante un viaje | `POST /api/rides/{passengerId}/messages` |
 | `account` | Que un usuario borre su propia cuenta | `DELETE /api/account` |
 | `driveradmin` | Panel de administración: listar, aprobar/rechazar, bloquear, cambiar rol y eliminar conductores | `GET /api/drivers`<br>`GET /api/drivers/{uid}`<br>`PUT /api/drivers/{uid}/role`<br>`PUT /api/drivers/{uid}/approval-status`<br>`PUT /api/drivers/{uid}/block-status`<br>`DELETE /api/drivers/{uid}` |
@@ -102,7 +102,7 @@ hilo de la carrera.
 
 | Dato | Base | Quién escribe | Notas |
 |---|---|---|---|
-| Carrera en curso `taxi_requests/{passengerId}` | Realtime Database | El **servidor** (crear, asignar, cancelar, finalizar, vencer, borrar). Las **apps** escriben directo `driverArrived`, `tripStarted` y `driver/location` | Una carrera por pasajero. Las apps escuchan este nodo en tiempo real. Se borra ~10 s después de terminar. |
+| Carrera en curso `taxi_requests/{passengerId}` | Realtime Database | El **servidor** (crear, asignar, llegada, inicio, cancelar, finalizar, vencer, borrar: todas las transiciones de estado). Las **apps** escriben directo solo `driver/location` | Una carrera por pasajero. Las apps escuchan este nodo en tiempo real. Se borra ~10 s después de terminar. |
 | Perfil de conductor `drivers/{uid}` | Firestore | La **app** (su perfil, `fcmToken`, `language`). El **servidor** (`role`, `approvalStatus`, `isBlocked` y sus metadatos) | Las reglas impiden que la app toque los campos de moderación. |
 | Vehículo `vehicles/{id}` | Firestore | La app | El servidor lo lee para mostrarlo al pasajero y lo borra con la cuenta. |
 | Perfil de pasajero `passengers/{uid}` | Firestore | La app | El servidor lee `fcmToken`/`language` para notificar. |
@@ -253,15 +253,15 @@ del puerto en `infra` y cambiar cuál registra Spring. `domain`, `application` y
 Cosas que **no están resueltas** y conviene tener presentes:
 
 - **Las reglas de Realtime Database no están en el repo** (`firebase.json` solo
-  tiene Firestore y Storage). Las apps escriben directo en `taxi_requests`
-  (`driverArrived`, `tripStarted`, `driver/location`), así que el servidor no
-  puede validar esas transiciones.
+  tiene Firestore y Storage). Todas las transiciones de **estado** ya pasan por
+  el servidor, pero las apps todavía escriben directo `taxi_requests/.../driver/location`
+  (la ubicación en vivo), y las apps VIEJAS siguen escribiendo `driverArrived`
+  y `tripStarted`. Mientras las reglas permitan esas escrituras, un cliente
+  modificado podría saltarse al servidor. Cerrarlo exige versionar las reglas y
+  subir la versión mínima de las apps (`taxiapp.app-versions.*`).
 - **Los temporizadores viven en memoria.** Si el servidor se reinicia, una
   solicitud pendiente no vence ni una carrera terminada se limpia. Por eso el
   proceso debe estar siempre vivo (`deploy/taxiapp.service`).
-- **Pedir un taxi reemplaza** una carrera en curso del mismo pasajero, y la
-  tarea de vencimiento de una solicitud vieja puede cancelar una nueva dentro de
-  la misma ventana (ambos congelados en tests `bug_conocido_*`).
 - **`findInProgressOf` lee todo `taxi_requests`** y filtra en memoria;
   **`listAllDrivers` hace una lectura de vehículo por conductor**.
 - **`DriverResponse` incluye el `fcmToken`** de cada conductor.

@@ -81,6 +81,27 @@ public class RideController {
         return ResponseEntity.noContent().build();
     }
 
+    // El conductor asignado avisa que llegó al punto de recogida ("he llegado").
+    @PostMapping("/{passengerId}/arrived")
+    public ResponseEntity<Void> markDriverArrived(
+            @PathVariable String passengerId,
+            @AuthenticationPrincipal AuthenticatedUser user
+    ) {
+        lifecycle.markDriverArrived(passengerId, user.uid());
+        return ResponseEntity.noContent().build();
+    }
+
+    // El pasajero confirma que va en camino al vehículo: el viaje empieza.
+    // passengerId tiene que ser el del propio pasajero que llama.
+    @PostMapping("/{passengerId}/start")
+    public ResponseEntity<Void> startTrip(
+            @PathVariable String passengerId,
+            @AuthenticationPrincipal AuthenticatedUser user
+    ) {
+        lifecycle.startTrip(passengerId, user.uid());
+        return ResponseEntity.noContent().build();
+    }
+
     // Solo el conductor asignado puede finalizar el viaje.
     @PostMapping("/{passengerId}/complete")
     public ResponseEntity<Void> completeTrip(

@@ -35,7 +35,7 @@ class RideTransitionsTest {
     void sobre_una_carrera_ausente_ninguna_regla_cambia_nada() {
         assertThat(RideTransitions.assign(null, DRIVER, 0, 0)).isEqualTo(RideChange.unchanged());
         assertThat(RideTransitions.cancel(null, "p1")).isEqualTo(RideChange.unchanged());
-        assertThat(RideTransitions.expire(null)).isEqualTo(RideChange.unchanged());
+        assertThat(RideTransitions.expire(null, "p1_1")).isEqualTo(RideChange.unchanged());
         assertThat(RideTransitions.complete(null, "d1")).isEqualTo(RideChange.unchanged());
         assertThat(RideTransitions.removeIfTerminal(null)).isEqualTo(RideChange.unchanged());
     }
@@ -158,7 +158,7 @@ class RideTransitionsTest {
 
         @Test
         void una_solicitud_pendiente_la_cancela_el_sistema() {
-            RideChange.Update update = asUpdate(RideTransitions.expire(ride(RideStatus.PENDING, null)));
+            RideChange.Update update = asUpdate(RideTransitions.expire(ride(RideStatus.PENDING, null), "p1_1"));
 
             assertThat(update.fields()).containsEntry("status", "cancelled")
                     .containsEntry("cancelledBy", "system");
@@ -168,11 +168,150 @@ class RideTransitionsTest {
         @Test
         void una_solicitud_que_ya_no_esta_pendiente_no_vence() {
             assertRejected(
-                    RideTransitions.expire(ride(RideStatus.DRIVER_ASSIGNED, "d1")),
+                    RideTransitions.expire(ride(RideStatus.DRIVER_ASSIGNED, "d1"), "p1_1"),
                     RideChange.Reason.NOT_ALLOWED);
             assertRejected(
-                    RideTransitions.expire(ride(RideStatus.CANCELLED, null)),
+                    RideTransitions.expire(ride(RideStatus.CANCELLED, null), "p1_1"),
                     RideChange.Reason.NOT_ALLOWED);
+        }
+    }
+
+    // Una solicitud vieja no puede vencer a una nueva del mismo pasajero.
+    @Test
+    void el_vencimiento_de_otra_solicitud_no_cancela_la_actual() {
+        assertRejected(
+                RideTransitions.expire(ride(RideStatus.PENDING, null), "p1_OTRA"),
+                RideChange.Reason.NOT_ALLOWED);
+    }
+
+    @Nested
+    class Pedir {
+
+        private final NewRide newRide = new NewRide(
+                "p1_99", "p1", "Ana", "https://p.jpg", new PickupLocation(-1.66, -78.65, "Centro", "La Saboya"));
+
+        @Test
+        void sin_carrera_previa_crea_la_solicitud_pendiente() {
+            RideChange change = RideTransitions.request(null, newRide);
+
+            assertThat(change).isInstanceOf(RideChange.Replace.class);
+            Map<String, Object> node = ((RideChange.Replace) change).node();
+            assertThat(node).containsEntry("rideId", "p1_99")
+                    .containsEntry("userId", "p1")
+                    .containsEntry("status", "pending")
+                    .containsEntry("createdAt", ServerTime.NOW)
+                    .containsEntry("updatedAt", ServerTime.NOW);
+            assertThat(node.get("passenger")).isEqualTo(Map.of("name", "Ana", "profileImage", "https://p.jpg"));
+            assertThat(node.get("pickupLocation")).isEqualTo(Map.of(
+                    "latitude", -1.66, "longitude", -78.65, "address", "Centro", "sector", "La Saboya"));
+            assertThat(node).doesNotContainKey("driver");
+        }
+
+        // El mismo pasajero volviendo a pedir, o un nodo esperando limpieza.
+        @Test
+        void reemplaza_una_solicitud_pendiente_o_una_carrera_terminada() {
+            assertThat(RideTransitions.request(ride(RideStatus.PENDING, null), newRide))
+                    .isInstanceOf(RideChange.Replace.class);
+            assertThat(RideTransitions.request(ride(RideStatus.CANCELLED, "d1"), newRide))
+                    .isInstanceOf(RideChange.Replace.class);
+            assertThat(RideTransitions.request(ride(RideStatus.TRIP_COMPLETED, "d1"), newRide))
+                    .isInstanceOf(RideChange.Replace.class);
+        }
+
+        // Pedir otro taxi no puede borrar el conductor que ya lo espera.
+        @Test
+        void no_pisa_un_viaje_en_curso() {
+            for (RideStatus status : new RideStatus[]{
+                    RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVED, RideStatus.TRIP_STARTED}) {
+                assertRejected(
+                        RideTransitions.request(ride(status, "d1"), newRide),
+                        RideChange.Reason.NOT_ALLOWED);
+            }
+        }
+    }
+
+    @Nested
+    class Llegar {
+
+        @Test
+        void el_conductor_asignado_marca_que_llego() {
+            RideChange.Update update = asUpdate(
+                    RideTransitions.markArrived(ride(RideStatus.DRIVER_ASSIGNED, "d1"), "d1"));
+
+            assertThat(update.fields()).containsEntry("status", "driverArrived")
+                    .containsEntry("updatedAt", ServerTime.NOW);
+        }
+
+        // La app reintenta ante un timeout: el segundo intento no es un error.
+        @Test
+        void es_idempotente_para_el_conductor_asignado() {
+            assertThat(RideTransitions.markArrived(ride(RideStatus.DRIVER_ARRIVED, "d1"), "d1"))
+                    .isEqualTo(RideChange.unchanged());
+        }
+
+        @Test
+        void otro_conductor_no_puede_marcar_la_llegada() {
+            assertRejected(
+                    RideTransitions.markArrived(ride(RideStatus.DRIVER_ASSIGNED, "d1"), "d2"),
+                    RideChange.Reason.FORBIDDEN);
+        }
+
+        @Test
+        void solo_se_marca_desde_driverAssigned() {
+            for (RideStatus status : new RideStatus[]{
+                    RideStatus.PENDING, RideStatus.TRIP_STARTED, RideStatus.TRIP_COMPLETED, RideStatus.CANCELLED}) {
+                assertRejected(
+                        RideTransitions.markArrived(ride(status, "d1"), "d1"),
+                        RideChange.Reason.NOT_ALLOWED);
+            }
+        }
+
+        // El estado se valida antes que la identidad.
+        @Test
+        void un_tercero_sobre_una_carrera_ya_llegada_recibe_no_permitido() {
+            assertRejected(
+                    RideTransitions.markArrived(ride(RideStatus.DRIVER_ARRIVED, "d1"), "intruso"),
+                    RideChange.Reason.NOT_ALLOWED);
+        }
+    }
+
+    @Nested
+    class Iniciar {
+
+        @Test
+        void el_pasajero_confirma_y_el_viaje_empieza() {
+            RideChange.Update update = asUpdate(
+                    RideTransitions.startTrip(ride(RideStatus.DRIVER_ARRIVED, "d1"), "p1"));
+
+            assertThat(update.fields()).containsEntry("status", "tripStarted")
+                    .containsEntry("updatedAt", ServerTime.NOW);
+        }
+
+        @Test
+        void es_idempotente_para_el_pasajero() {
+            assertThat(RideTransitions.startTrip(ride(RideStatus.TRIP_STARTED, "d1"), "p1"))
+                    .isEqualTo(RideChange.unchanged());
+        }
+
+        // Ni siquiera el conductor asignado puede confirmar por el pasajero.
+        @Test
+        void solo_el_pasajero_dueño_puede_iniciar() {
+            assertRejected(
+                    RideTransitions.startTrip(ride(RideStatus.DRIVER_ARRIVED, "d1"), "d1"),
+                    RideChange.Reason.FORBIDDEN);
+            assertRejected(
+                    RideTransitions.startTrip(ride(RideStatus.DRIVER_ARRIVED, "d1"), "otro"),
+                    RideChange.Reason.FORBIDDEN);
+        }
+
+        @Test
+        void solo_se_inicia_con_el_conductor_ya_llegado() {
+            for (RideStatus status : new RideStatus[]{
+                    RideStatus.PENDING, RideStatus.DRIVER_ASSIGNED, RideStatus.TRIP_COMPLETED, RideStatus.CANCELLED}) {
+                assertRejected(
+                        RideTransitions.startTrip(ride(status, "d1"), "p1"),
+                        RideChange.Reason.NOT_ALLOWED);
+            }
         }
     }
 

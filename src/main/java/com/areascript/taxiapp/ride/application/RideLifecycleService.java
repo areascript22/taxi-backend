@@ -82,7 +82,14 @@ public class RideLifecycleService {
                 PickupLocation.sanitized(pickupLatitude, pickupLongitude, pickupAddress, pickupSector);
         String rideId = passengerId + "_" + clock.millis();
 
-        rides.create(new NewRide(rideId, passengerId, passengerName, passengerPhotoUrl, pickup));
+        NewRide newRide = new NewRide(rideId, passengerId, passengerName, passengerPhotoUrl, pickup);
+        RideOutcome outcome = rides.transact(passengerId, ride -> RideTransitions.request(ride, newRide));
+
+        // Un viaje en curso no se pisa: pedir otro taxi le borraría al
+        // pasajero el conductor que ya lo está esperando.
+        if (!outcome.committed()) {
+            throw new ConflictException("El pasajero passengerId=" + passengerId + " ya tiene un viaje en curso");
+        }
         log.info("RideDebug | Solicitud creada para passengerId={}", passengerId);
 
         // Margen que le damos al cliente para cancelar por su cuenta (el
@@ -90,7 +97,11 @@ public class RideLifecycleService {
         // el backend intervenga: cubre el caso de que el pasajero cierre la
         // app y nunca la vuelva a abrir, donde de otra forma la solicitud
         // quedaría 'pending' para siempre.
-        timers.expireAfter(settings.pendingRequestExpiry(), () -> expireIfStillPending(passengerId));
+        //
+        // La tarea lleva el rideId de ESTA solicitud: si el pasajero cancela y
+        // vuelve a pedir dentro de la ventana, la tarea vieja no puede vencer
+        // a la nueva.
+        timers.expireAfter(settings.pendingRequestExpiry(), () -> expireIfStillPending(passengerId, rideId));
     }
 
     // Tarea agendada desde requestRide: si pasado el margen la solicitud sigue
@@ -99,10 +110,10 @@ public class RideLifecycleService {
     // un conductor que la acepte justo en este instante.
     //
     // Corre en un hilo del scheduler: nunca relanza.
-    private void expireIfStillPending(String passengerId) {
+    private void expireIfStillPending(String passengerId, String rideId) {
         RideOutcome outcome;
         try {
-            outcome = rides.transact(passengerId, RideTransitions::expire);
+            outcome = rides.transact(passengerId, ride -> RideTransitions.expire(ride, rideId));
         } catch (ExternalServiceException e) {
             log.error("RideDebug | No se pudo auto-cancelar la solicitud de passengerId={}: {}", passengerId, e.getMessage());
             return;
@@ -279,6 +290,43 @@ public class RideLifecycleService {
         }
 
         scheduleCleanup(passengerId);
+    }
+
+    // El conductor asignado avisa que llegó al punto de recogida. Antes la app
+    // escribía el estado directo en Realtime Database, sin que nadie
+    // verificara quién era ni en qué estado estaba la carrera.
+    //
+    // Es idempotente: si ya figura como llegado, es un éxito (la app reintenta
+    // ante un timeout).
+    public void markDriverArrived(String passengerId, String driverUid) {
+        RideOutcome outcome = rides.transact(passengerId, ride -> RideTransitions.markArrived(ride, driverUid));
+        requireApplied(outcome, passengerId, RideStatus.DRIVER_ARRIVED);
+        log.info("RideDebug | Conductor driverUid={} llegó al punto de recogida de passengerId={}", driverUid, passengerId);
+    }
+
+    // El pasajero confirma que va "en camino" hacia el vehículo: el viaje
+    // empieza. Solo el pasajero dueño de la carrera, y solo con el conductor
+    // ya llegado. Idempotente, igual que markDriverArrived.
+    public void startTrip(String passengerId, String passengerUid) {
+        RideOutcome outcome = rides.transact(passengerId, ride -> RideTransitions.startTrip(ride, passengerUid));
+        requireApplied(outcome, passengerId, RideStatus.TRIP_STARTED);
+        log.info("RideDebug | Viaje de passengerId={} iniciado", passengerId);
+    }
+
+    // Traduce el resultado de una transición a "se aplicó" o al error de
+    // negocio que corresponda (404 / 403 / 409).
+    private void requireApplied(RideOutcome outcome, String passengerId, RideStatus expected) {
+        Ride ride = outcome.ride();
+        if (ride == null) {
+            throw rideNotFound(passengerId);
+        }
+        if (outcome.rejectedAsForbidden()) {
+            throw rideForbidden(passengerId);
+        }
+        if (!outcome.committed() || ride.status() != expected) {
+            throw new ConflictException("La carrera de passengerId=" + passengerId
+                    + " no está en un estado que admita esta operación");
+        }
     }
 
     // Solo el conductor asignado puede finalizar el viaje (verificado en el

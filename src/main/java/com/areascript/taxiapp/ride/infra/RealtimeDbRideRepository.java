@@ -2,7 +2,6 @@ package com.areascript.taxiapp.ride.infra;
 
 import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
-import com.areascript.taxiapp.ride.domain.NewRide;
 import com.areascript.taxiapp.ride.domain.Ride;
 import com.areascript.taxiapp.ride.domain.RideChange;
 import com.areascript.taxiapp.ride.domain.RideOutcome;
@@ -23,7 +22,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -86,39 +84,6 @@ public class RealtimeDbRideRepository implements RideRepository {
     }
 
     @Override
-    public void create(NewRide ride) {
-        Map<String, Object> pickup = new HashMap<>();
-        pickup.put("latitude", ride.pickup().latitude());
-        pickup.put("longitude", ride.pickup().longitude());
-        pickup.put("address", ride.pickup().address());
-        pickup.put("sector", ride.pickup().sector());
-
-        Map<String, Object> passenger = new HashMap<>();
-        passenger.put("name", ride.passengerName());
-        passenger.put("profileImage", ride.passengerPhotoUrl());
-
-        Map<String, Object> node = new HashMap<>();
-        node.put("rideId", ride.rideId());
-        node.put("userId", ride.passengerId());
-        node.put("passenger", passenger);
-        node.put("pickupLocation", pickup);
-        node.put("status", RideStatus.PENDING.wireValue());
-        node.put("createdAt", ServerValue.TIMESTAMP);
-        node.put("updatedAt", ServerValue.TIMESTAMP);
-
-        CompletableFuture<Void> future = new CompletableFuture<>();
-        ref(ride.passengerId()).setValue(node, (error, reference) -> {
-            if (error != null) {
-                future.completeExceptionally(error.toException());
-            } else {
-                future.complete(null);
-            }
-        });
-
-        await(future, "No se pudo crear la solicitud", ride.passengerId());
-    }
-
-    @Override
     public RideOutcome transact(String passengerId, RideTransition transition) {
         CompletableFuture<Completion> future = new CompletableFuture<>();
         AtomicReference<RideChange> lastDecision = new AtomicReference<>(RideChange.unchanged());
@@ -139,6 +104,10 @@ public class RealtimeDbRideRepository implements RideRepository {
                     }
                     case RideChange.Remove remove -> {
                         currentData.setValue(null);
+                        yield Transaction.success(currentData);
+                    }
+                    case RideChange.Replace replace -> {
+                        currentData.setValue(toStored(replace.node()));
                         yield Transaction.success(currentData);
                     }
                 };
@@ -168,9 +137,18 @@ public class RealtimeDbRideRepository implements RideRepository {
     // ---- Mapeo nodo <-> modelo ----
 
     // El valor de ServerTime.NOW se escribe como la marca de hora del servidor
-    // de Firebase; todo lo demás va tal cual.
+    // de Firebase (también dentro de un mapa anidado); todo lo demás va tal
+    // cual.
     private static Object toStored(Object value) {
-        return value == ServerTime.NOW ? ServerValue.TIMESTAMP : value;
+        if (value == ServerTime.NOW) {
+            return ServerValue.TIMESTAMP;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> converted = new LinkedHashMap<>();
+            map.forEach((key, child) -> converted.put(String.valueOf(key), toStored(child)));
+            return converted;
+        }
+        return value;
     }
 
     // value es el nodo de una carrera (un mapa) o null si no existe.

@@ -18,12 +18,10 @@ public interface RideRepository {
     // conductor; vacío si no tiene ninguna.
     Optional<Ride> findInProgressOf(String driverUid);
 
-    // Crea la solicitud en estado PENDING. Si el pasajero ya tenía una carrera,
-    // la REEMPLAZA (bug conocido, se corrige en una fase posterior).
-    void create(NewRide ride);
-
     // Aplica la regla de forma atómica: si dos llamadas compiten por la misma
     // carrera, se serializan y cada una ve el resultado de la anterior. La
-    // regla puede ejecutarse más de una vez, por eso tiene que ser pura.
+    // regla puede ejecutarse más de una vez, por eso tiene que ser pura. Crear
+    // una solicitud también pasa por acá (RideTransitions.request): es lo que
+    // permite rechazarla si el pasajero ya tiene un viaje en curso.
     RideOutcome transact(String passengerId, RideTransition transition);
 }

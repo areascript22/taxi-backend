@@ -28,6 +28,91 @@ public final class RideTransitions {
     private RideTransitions() {
     }
 
+    // Crea una solicitud PENDING. Reemplaza lo que hubiera, salvo un viaje en
+    // curso (con conductor asignado): pedir un taxi otra vez NO puede borrarle
+    // al pasajero el conductor que ya lo está esperando.
+    //
+    // Una solicitud previa todavía PENDING sí se reemplaza (es el mismo
+    // pasajero volviendo a pedir) y una terminada también (el nodo estaba
+    // esperando su limpieza). Con la carrera ausente (null) se crea: si en
+    // realidad existía, la escritura es condicional y el SDK reintenta esta
+    // regla con el dato real.
+    public static RideChange request(Ride current, NewRide ride) {
+        if (current != null && current.isInProgress()) {
+            return RideChange.rejected(NOT_ALLOWED);
+        }
+
+        Map<String, Object> pickup = new HashMap<>();
+        pickup.put("latitude", ride.pickup().latitude());
+        pickup.put("longitude", ride.pickup().longitude());
+        pickup.put("address", ride.pickup().address());
+        pickup.put("sector", ride.pickup().sector());
+
+        Map<String, Object> passenger = new HashMap<>();
+        passenger.put("name", ride.passengerName());
+        passenger.put("profileImage", ride.passengerPhotoUrl());
+
+        Map<String, Object> node = new HashMap<>();
+        node.put("rideId", ride.rideId());
+        node.put("userId", ride.passengerId());
+        node.put("passenger", passenger);
+        node.put("pickupLocation", pickup);
+        node.put("status", RideStatus.PENDING.wireValue());
+        node.put("createdAt", ServerTime.NOW);
+        node.put("updatedAt", ServerTime.NOW);
+        return RideChange.replace(node);
+    }
+
+    // DRIVER_ASSIGNED -> DRIVER_ARRIVED, solo por el conductor asignado ("he
+    // llegado"). Es idempotente: si ya figura como llegado, el reintento de la
+    // app (que reenvía ante un timeout) es un éxito sin escribir nada.
+    //
+    // El estado se valida ANTES que la identidad, igual que en `complete`.
+    public static RideChange markArrived(Ride current, String driverUid) {
+        if (current == null) {
+            return RideChange.unchanged();
+        }
+        boolean isAssignedDriver = driverUid.equals(current.driverId());
+        if (current.status() == RideStatus.DRIVER_ARRIVED && isAssignedDriver) {
+            return RideChange.unchanged();
+        }
+        if (current.status() != RideStatus.DRIVER_ASSIGNED) {
+            return RideChange.rejected(NOT_ALLOWED);
+        }
+        if (!isAssignedDriver) {
+            return RideChange.rejected(FORBIDDEN);
+        }
+
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("status", RideStatus.DRIVER_ARRIVED.wireValue());
+        fields.put("updatedAt", ServerTime.NOW);
+        return RideChange.update(fields);
+    }
+
+    // DRIVER_ARRIVED -> TRIP_STARTED, solo por el pasajero dueño de la carrera
+    // ("en camino": confirma que se dirige al vehículo). Idempotente, igual
+    // que `markArrived`.
+    public static RideChange startTrip(Ride current, String passengerUid) {
+        if (current == null) {
+            return RideChange.unchanged();
+        }
+        boolean isOwner = passengerUid.equals(current.passengerId());
+        if (current.status() == RideStatus.TRIP_STARTED && isOwner) {
+            return RideChange.unchanged();
+        }
+        if (current.status() != RideStatus.DRIVER_ARRIVED) {
+            return RideChange.rejected(NOT_ALLOWED);
+        }
+        if (!isOwner) {
+            return RideChange.rejected(FORBIDDEN);
+        }
+
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("status", RideStatus.TRIP_STARTED.wireValue());
+        fields.put("updatedAt", ServerTime.NOW);
+        return RideChange.update(fields);
+    }
+
     // PENDING -> DRIVER_ASSIGNED. Solo si sigue PENDING, para que si dos
     // conductores aceptan a la vez gane uno solo.
     public static RideChange assign(Ride current, DriverContact driver, double driverLat, double driverLng) {
@@ -92,11 +177,15 @@ public final class RideTransitions {
     // PENDING -> CANCELLED por el sistema: red de seguridad para el pasajero
     // que cerró la app sin cancelar. Si ya la aceptó un conductor, o ya la
     // canceló el pasajero, no hay nada que hacer.
-    public static RideChange expire(Ride current) {
+    //
+    // `rideId` es el de la solicitud que agendó el vencimiento: la tarea solo
+    // conoce al pasajero, y si este canceló y volvió a pedir dentro de la
+    // ventana, el nodo ya es OTRA solicitud que no le toca vencer todavía.
+    public static RideChange expire(Ride current, String rideId) {
         if (current == null) {
             return RideChange.unchanged();
         }
-        if (current.status() != RideStatus.PENDING) {
+        if (current.status() != RideStatus.PENDING || !rideId.equals(current.rideId())) {
             return RideChange.rejected(NOT_ALLOWED);
         }
         return RideChange.update(cancelledFields(CANCELLED_BY_SYSTEM));

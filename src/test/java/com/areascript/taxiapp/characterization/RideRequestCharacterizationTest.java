@@ -152,34 +152,82 @@ class RideRequestCharacterizationTest extends CharacterizationTestBase {
         assertThat(rideField("p1", "cancelledBy")).isNull();
     }
 
-    // Bug conocido: la tarea de auto-cancelación solo conoce el passengerId,
-    // no el rideId. Si el pasajero cancela y vuelve a pedir dentro de los 35 s,
-    // la tarea de la PRIMERA solicitud cancela la segunda antes de tiempo.
+    // Fase 9: la tarea de vencimiento lleva el rideId de SU solicitud. Si el
+    // pasajero cancela y vuelve a pedir dentro de los 35 s, la tarea de la
+    // primera ya no puede cancelar a la segunda antes de tiempo.
     @Test
-    void bug_conocido_la_tarea_de_una_solicitud_vieja_cancela_la_nueva() throws Exception {
+    void la_tarea_de_una_solicitud_vieja_no_cancela_la_nueva() throws Exception {
         mvc.perform(post("/api/rides/request")
                         .header("Authorization", userToken("p1"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(BODY))
                 .andExpect(status().isNoContent());
         Runnable firstRequestExpiry = scheduledTasks().get(0).task();
+        Object firstRideId = rideField("p1", "rideId");
 
+        // El rideId lleva los milisegundos: se separan para que sean distintos.
+        Thread.sleep(5);
+        mvc.perform(post("/api/rides/request")
+                        .header("Authorization", userToken("p1"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(BODY))
+                .andExpect(status().isNoContent());
+        assertThat(rideField("p1", "rideId")).isNotEqualTo(firstRideId);
+
+        firstRequestExpiry.run();
+
+        assertThat(rideField("p1", "status")).isEqualTo("pending");
+        assertThat(rideField("p1", "cancelledBy")).isNull();
+    }
+
+    // ...pero la tarea de la solicitud ACTUAL sí la vence.
+    @Test
+    void la_tarea_de_la_solicitud_actual_si_la_cancela() throws Exception {
+        mvc.perform(post("/api/rides/request")
+                        .header("Authorization", userToken("p1"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(BODY))
+                .andExpect(status().isNoContent());
+        Thread.sleep(5);
         mvc.perform(post("/api/rides/request")
                         .header("Authorization", userToken("p1"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(BODY))
                 .andExpect(status().isNoContent());
 
-        firstRequestExpiry.run();
+        List<ScheduledTask> tasks = scheduledTasks();
+        tasks.get(1).task().run();
 
         assertThat(rideField("p1", "status")).isEqualTo("cancelled");
+        assertThat(rideField("p1", "cancelledBy")).isEqualTo("system");
     }
 
-    // Bug conocido: no se verifica si el pasajero ya tiene un viaje en curso;
-    // la solicitud nueva pisa el nodo completo (se pierde el conductor asignado).
+    // Fase 9: pedir otro taxi no puede borrarle al pasajero el conductor que
+    // ya lo está esperando.
     @Test
-    void bug_conocido_una_solicitud_nueva_pisa_un_viaje_en_curso() throws Exception {
-        givenRide("p1", "tripStarted", "d1");
+    void una_solicitud_nueva_no_pisa_un_viaje_en_curso() throws Exception {
+        for (String status : new String[]{"driverAssigned", "driverArrived", "tripStarted"}) {
+            givenRide("p1", status, "d1");
+
+            mvc.perform(post("/api/rides/request")
+                            .header("Authorization", userToken("p1"))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(BODY))
+                    .andExpect(status().isConflict());
+
+            assertThat(rideField("p1", "status")).isEqualTo(status);
+            assertThat(rideField("p1", "driver/data/id")).isEqualTo("d1");
+        }
+        assertThat(scheduledTasks()).isEmpty();
+    }
+
+    // Una solicitud todavía pendiente (el mismo pasajero volviendo a pedir) o
+    // una carrera terminada que espera su limpieza sí se reemplazan, y la
+    // nueva no hereda nada de la anterior.
+    @Test
+    void una_solicitud_nueva_reemplaza_una_pendiente_o_una_terminada() throws Exception {
+        givenRide("p1", "cancelled", "d1");
+        rtdb.put(RIDES + "/p1/cancelledBy", "driver");
 
         mvc.perform(post("/api/rides/request")
                         .header("Authorization", userToken("p1"))
@@ -189,6 +237,15 @@ class RideRequestCharacterizationTest extends CharacterizationTestBase {
 
         assertThat(rideField("p1", "status")).isEqualTo("pending");
         assertThat(rideField("p1", "driver")).isNull();
+        assertThat(rideField("p1", "cancelledBy")).isNull();
+
+        givenRide("p2", "pending", null);
+        mvc.perform(post("/api/rides/request")
+                        .header("Authorization", userToken("p2"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(BODY))
+                .andExpect(status().isNoContent());
+        assertThat(rideField("p2", "status")).isEqualTo("pending");
     }
 
     @Test

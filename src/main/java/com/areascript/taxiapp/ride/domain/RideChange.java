@@ -35,6 +35,13 @@ public sealed interface RideChange {
     record Remove() implements RideChange {
     }
 
+    // Reemplaza la carrera completa por este nodo (no deja ningún campo del
+    // anterior). Es lo que hace una solicitud nueva: no hereda el conductor ni
+    // la cancelación de una carrera previa terminada. Los valores pueden
+    // contener ServerTime.NOW.
+    record Replace(Map<String, Object> node) implements RideChange {
+    }
+
     static RideChange unchanged() {
         return new Unchanged();
     }
@@ -49,5 +56,9 @@ public sealed interface RideChange {
 
     static RideChange remove() {
         return new Remove();
+    }
+
+    static RideChange replace(Map<String, Object> node) {
+        return new Replace(node);
     }
 }

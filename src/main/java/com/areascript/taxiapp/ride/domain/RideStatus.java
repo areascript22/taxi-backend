@@ -8,10 +8,14 @@ import java.util.Optional;
 //   PENDING -> DRIVER_ASSIGNED -> DRIVER_ARRIVED -> TRIP_STARTED -> TRIP_COMPLETED
 //        \______________\________________\_______________\______-> CANCELLED
 //
-// Hoy el servidor hace PENDING -> DRIVER_ASSIGNED, TRIP_STARTED ->
-// TRIP_COMPLETED y cualquier estado no terminal -> CANCELLED. Las apps todavía
-// escriben directo DRIVER_ARRIVED y TRIP_STARTED (se mueven al servidor en una
-// fase posterior), por eso el servidor las tiene que poder leer.
+// Todas las transiciones las hace el servidor (ver RideTransitions):
+// PENDING -> DRIVER_ASSIGNED (conductor acepta), -> DRIVER_ARRIVED (conductor
+// llegó), -> TRIP_STARTED (pasajero va en camino), -> TRIP_COMPLETED
+// (conductor finaliza) y cualquier estado no terminal -> CANCELLED.
+//
+// Las versiones VIEJAS de las apps todavía escriben DRIVER_ARRIVED y
+// TRIP_STARTED directo en la base: el servidor las tiene que poder leer como
+// siempre.
 public enum RideStatus {
     PENDING("pending"),
     DRIVER_ASSIGNED("driverAssigned"),
