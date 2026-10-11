@@ -289,7 +289,9 @@ Migración por pasos; el estado real hoy:
 | Paso | Qué | Estado |
 |---|---|---|
 | 1 | Postgres/PostGIS en Docker + Flyway (esquema base) + backups | Hecho. Ninguna feature lee ni escribe en la base todavía. |
-| 2 | Usuarios, roles y vehículos pasan de Firestore a Postgres | Pendiente |
+| 2a | Tablas `drivers`, `vehicles`, `passengers` (V2), entidades JPA y copia desde Firestore | Hecho. Se llenan con el importador; nadie las lee todavía. |
+| 2b | Endpoints de perfil en el servidor y apps escribiendo por ahí (Firestore deja de ser fuente de verdad) | Pendiente |
+| 2c | `DriverRepository`, `DeviceRegistry`, etc. leen de Postgres | Pendiente |
 | 3 | Despacho por cercanía con `ST_DWithin` | Pendiente |
 
 La carrera en curso sigue en Realtime Database; el chat, en Firestore.
@@ -308,5 +310,21 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d db
 
 La base nunca publica puertos en producción: Docker se salta `ufw`, así que un
 `ports:` en `db` la expondría a internet aunque el firewall diga que no.
+
+**Entidades JPA.** Son clases `*Row` (`DriverRow`, `VehicleRow`, `PassengerRow`)
+que viven en `infra` y no salen de ahí: el dominio sigue usando sus records
+(`Driver`, `Vehicle`). Hibernate corre con `ddl-auto=validate`: si una entidad no
+coincide con las tablas de Flyway, el servidor no arranca.
+
+**Copiar los perfiles de Firestore a Postgres.** Una sola corrida, idempotente,
+solo LEE Firestore (ver `bootstrap/FirestoreToPostgresImporter`):
+
+```bash
+java -jar taxiapp.jar --taxiapp.import.firestore-to-postgres=true
+```
+
+Se puede repetir; cada fila se sobrescribe con lo que haya en Firestore. No
+borra. Mientras las apps sigan escribiendo perfiles en Firestore, Postgres se
+desactualiza: por eso la copia es un paso previo, no la migración completa.
 
 **Backups y restauración.** Ver [`ops/README.md`](ops/README.md).

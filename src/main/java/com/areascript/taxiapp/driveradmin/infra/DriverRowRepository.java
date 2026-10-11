@@ -1,0 +1,8 @@
+package com.areascript.taxiapp.driveradmin.infra;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+// Acceso a la tabla `drivers`. Solo lo usa infra; el resto del servidor habla
+// con el puerto DriverRepository del dominio.
+public interface DriverRowRepository extends JpaRepository<DriverRow, String> {
+}

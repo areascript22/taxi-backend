@@ -84,7 +84,8 @@ class ArchitectureRulesTest {
     @Test
     void las_features_solo_se_conocen_por_su_dominio() {
         List<String> features =
-                List.of("notification", "identity", "account", "driveradmin", "chat", "ride", "appversion");
+                List.of("notification", "identity", "account", "driveradmin", "chat", "ride", "appversion",
+                        "passenger");
 
         for (String feature : features) {
             String[] othersInternals = features.stream()
