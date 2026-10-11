@@ -410,13 +410,17 @@ RideAccepted / RideRequestWithdrawn ─▶ se retiran todas las ofertas y la bú
 - **La bandeja es la evidencia.** "A quién se le ofreció" se verifica contra
   `driver_offers/{uid}/{passengerId}` (con el `rideId`, para que una oferta vieja
   no autorice una solicitud nueva), no contra la memoria del servidor.
-- **Dos interruptores** (`taxiapp.dispatch.*`), porque se implanta en dos tiempos
-  por las apps viejas: `enabled` (aditivo; ofrece sin quitarle nada a nadie) y
-  `enforce-offers` (solo acepta quien recibió la oferta, y "no hay vehículos" al
-  agotar los anillos). El segundo se enciende después de subir la versión
-  mínima de driver_app.
-- **Reglas de la bandeja** (todavía no versionadas, igual que las demás de RTDB):
-  `driver_offers/$uid` con `.read: auth.uid === $uid` y `.write: false`.
+- **Dos interruptores** (`taxiapp.dispatch.*`), ambos activos por defecto:
+  `enabled` (busca y ofrece) y `enforce-offers` (solo acepta quien recibió la
+  oferta, y "no hay vehículos" al agotar los anillos). `enforce-offers` es un
+  interruptor y no una constante por si alguna vez hay que convivir con una app
+  que todavía lea todo `taxi_requests`; mientras la app no esté publicada no es
+  el caso.
+- **Reglas de RTDB** (`firebase/database.rules.json`): `driver_offers/$uid` solo
+  lo lee su dueño y `taxi_requests/$passengerId` solo el pasajero y el conductor
+  asignado; nadie escribe desde el cliente. **Hay que desplegarlas**
+  (`firebase deploy --only database`): hasta entonces las reglas vigentes son
+  las que tenga el proyecto.
 - **Límite:** los temporizadores de los anillos viven en memoria. Si el servidor
   se reinicia a mitad de una búsqueda, esa búsqueda no sigue ampliando; la
   solicitud igual vence (mismo límite que el vencimiento de solicitudes).

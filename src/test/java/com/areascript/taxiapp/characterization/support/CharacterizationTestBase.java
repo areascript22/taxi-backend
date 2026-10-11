@@ -65,6 +65,7 @@ import static org.mockito.Mockito.when;
         "taxiapp.admin.founder-uid=" + CharacterizationTestBase.FOUNDER_UID,
         "taxiapp.admin.founder-email=" + CharacterizationTestBase.FOUNDER_EMAIL,
         "taxiapp.persistence.postgres=false",
+        "taxiapp.dispatch.enforce-offers=false",
         "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
                 + "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration,"
