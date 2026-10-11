@@ -330,8 +330,23 @@ vehicles(vehicle_id PK, driver_id FK drivers)
 - Todo texto tiene un `CHECK` de longitud y todas las restricciones tienen nombre
   (`pk_`, `fk_`, `uq_`, `ck_`).
 
+**Configuración del despacho (V4).** Lo que decide a quién se le ofrece un pedido
+vive en la base y lo edita un administrador, sin desplegar:
+
+```
+dispatch_settings(id = 1)   frescura de la ubicación, intervalo y umbral de movimiento del ping
+dispatch_rings(ring_number) radio (m), espera (s) y máximo de conductores por anillo
+```
+
+Los anillos son FILAS: agregar un intento es agregar una fila. La base garantiza
+rangos, unicidad y fila única; lo que no cabe en un `CHECK` (radios
+estrictamente crecientes, números consecutivos) lo valida el dominio al guardar.
+Cuando se implemente el despacho, cada carrera debe guardar una COPIA de los
+anillos con los que arrancó, para que un cambio de configuración a mitad de una
+búsqueda no la altere.
+
 **Entidades JPA.** Son clases `*Row` (`UserRow`, `DriverRow`, `VehicleRow`,
-`PassengerRow`) que viven en `infra` y no salen de ahí: el dominio sigue usando
+`PassengerRow`, `DispatchSettingsRow`, `DispatchRingRow`) que viven en `infra` y no salen de ahí: el dominio sigue usando
 sus records (`Driver`, `Vehicle`). Hibernate corre con `ddl-auto=validate`: si una
 entidad no coincide con las tablas de Flyway, el servidor no arranca.
 

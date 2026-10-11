@@ -1,5 +1,6 @@
 package com.areascript.taxiapp.bootstrap;
 
+import com.areascript.taxiapp.database.support.SharedPostgis;
 import com.areascript.taxiapp.driveradmin.infra.DriverRow;
 import com.areascript.taxiapp.driveradmin.infra.DriverRowRepository;
 import com.areascript.taxiapp.driveradmin.infra.VehicleRowRepository;
@@ -17,9 +18,6 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.DockerClientFactory;
-import org.testcontainers.postgresql.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -44,22 +42,13 @@ class ProfileImportServiceTest {
 
     private static final Instant IMPORTED_AT = Instant.parse("2026-10-11T12:00:00Z");
 
-    private static PostgreSQLContainer postgres;
-
     static boolean dockerAvailable() {
-        return DockerClientFactory.instance().isDockerAvailable();
+        return SharedPostgis.dockerAvailable();
     }
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        if (postgres == null) {
-            postgres = new PostgreSQLContainer(
-                    DockerImageName.parse("postgis/postgis:16-3.4").asCompatibleSubstituteFor("postgres"));
-            postgres.start();
-        }
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
+        SharedPostgis.registerDatasource(registry);
     }
 
     @Autowired
