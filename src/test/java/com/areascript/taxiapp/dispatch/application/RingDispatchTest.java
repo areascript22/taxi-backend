@@ -119,6 +119,32 @@ class RingDispatchTest extends CharacterizationTestBase {
         assertThat(offer("ocupado", "p1")).isNull();
     }
 
+    // La misma cuenta puede ser conductor y pasajero. Estando en línea, saldría
+    // como el conductor más cercano de su propia solicitud.
+    @Test
+    void el_pasajero_no_recibe_su_propia_solicitud_aunque_sea_conductor_en_linea() throws Exception {
+        availableDriver("p1", 0.0);                 // la cuenta del pasajero, en línea y justo en el punto
+        availableDriver("otro", NEAR);
+
+        requestRide("p1");
+        runTask(1);
+
+        assertThat(offer("p1", "p1")).as("no se ofrece a quien la pidió").isNull();
+        assertThat(offer("otro", "p1")).isNotNull();
+    }
+
+    @Test
+    void nadie_puede_aceptar_su_propia_solicitud() throws Exception {
+        availableDriver("p1", 0.0);
+        requestRide("p1");
+
+        mvc.perform(post("/api/rides/p1/accept").header("Authorization", userToken("p1"))
+                        .contentType(JSON).content("{\"latitude\":-1.66,\"longitude\":-78.65}"))
+                .andExpect(status().isForbidden());
+
+        assertThat(rideField("p1", "status")).isEqualTo("pending");
+    }
+
     @Test
     void respeta_el_maximo_de_conductores_del_anillo() throws Exception {
         dispatchPlans.use(new DispatchPlan(List.of(

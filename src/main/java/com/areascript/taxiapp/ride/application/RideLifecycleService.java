@@ -202,6 +202,12 @@ public class RideLifecycleService {
             double driverLatitude,
             double driverLongitude
     ) {
+        // Nadie acepta su propia solicitud: la misma cuenta puede ser pasajero y
+        // conductor, pero no las dos cosas en la misma carrera.
+        if (driverUid.equals(passengerId)) {
+            throw new ForbiddenException("No puedes aceptar tu propia solicitud de carrera");
+        }
+
         // Primero se autoriza al conductor, antes de tocar la carrera.
         DriverContact contact = authorizedContact(driverUid, driverEmail, driverDisplayName, driverPhotoUrl);
         if (dispatchProperties.enforceOffers()) {

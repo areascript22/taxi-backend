@@ -148,13 +148,20 @@ public class RingDispatcher {
             }
 
             DispatchRing ring = session.plan().rings().get(index);
+
+            // Quien pidió el taxi no puede ser su propio conductor: la misma
+            // cuenta puede ser pasajero y conductor, y estando en línea saldría
+            // como "el conductor más cercano" de su propia solicitud.
+            Set<String> excluded = new LinkedHashSet<>(session.offered());
+            excluded.add(session.passengerId());
+
             List<NearbyDriver> nearby = presence.findAvailableNear(
                     session.pickupLatitude(),
                     session.pickupLongitude(),
                     ring.radiusMeters(),
                     session.plan().locationMaxAge(),
                     ring.maxDrivers(),
-                    session.offered());
+                    excluded);
 
             Instant expiresAt = session.startedAt().plus(session.plan().totalWait()).plus(OFFER_MARGIN);
             for (NearbyDriver driver : nearby) {
