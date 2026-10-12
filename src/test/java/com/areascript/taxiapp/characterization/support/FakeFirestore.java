@@ -61,6 +61,13 @@ public final class FakeFirestore {
         return documents.containsKey(documentPath);
     }
 
+    // Borra un documento (no hace nada si no existe). Lo usa el arnés para que
+    // borrar a una persona de la base de usuarios simulada también quite sus
+    // documentos de perfil, como lo hace la cascada de Postgres.
+    public synchronized void delete(String documentPath) {
+        documents.remove(documentPath);
+    }
+
     // Documentos directos de una colección (sin los de sus subcolecciones).
     public synchronized List<String> documentIds(String collectionPath) {
         List<String> ids = new ArrayList<>();

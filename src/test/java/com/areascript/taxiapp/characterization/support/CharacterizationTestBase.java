@@ -1,6 +1,5 @@
 package com.areascript.taxiapp.characterization.support;
 
-import com.areascript.taxiapp.bootstrap.ApprovalStatusBackfill;
 import com.areascript.taxiapp.driveradmin.api.SuperUserBootstrap;
 import com.areascript.taxiapp.user.domain.UserRole;
 import com.google.cloud.firestore.Firestore;
@@ -101,9 +100,6 @@ public abstract class CharacterizationTestBase {
     @MockitoBean
     private SuperUserBootstrap superUserBootstrap;
 
-    @MockitoBean
-    private ApprovalStatusBackfill approvalStatusBackfill;
-
     @Autowired
     private WebApplicationContext context;
 
@@ -136,6 +132,18 @@ public abstract class CharacterizationTestBase {
 
         firestore = new FakeFirestore();
         firestore.install(firestoreMock);
+
+        // En producción borrar a una persona borra en cascada (en la base) su
+        // perfil, su vehículo y, por la foto y los chats, el limpiador de datos.
+        // Acá los perfiles son documentos del FakeFirestore: se quitan igual.
+        users.onRemove(uid -> {
+            Map<String, Object> driver = firestore.get("drivers/" + uid);
+            if (driver != null && driver.get("vehicleId") != null) {
+                firestore.delete("vehicles/" + driver.get("vehicleId"));
+            }
+            firestore.delete("drivers/" + uid);
+            firestore.delete("passengers/" + uid);
+        });
 
         // Cualquier token que el test no haya registrado es inválido.
         when(firebaseAuth.verifyIdToken(anyString())).thenThrow(authError(AuthErrorCode.INVALID_ID_TOKEN));

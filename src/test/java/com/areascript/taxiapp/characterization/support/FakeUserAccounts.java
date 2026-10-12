@@ -4,9 +4,12 @@ import com.areascript.taxiapp.user.domain.UserAccount;
 import com.areascript.taxiapp.user.domain.UserAccounts;
 import com.areascript.taxiapp.user.domain.UserRole;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 // La base de usuarios en memoria para los tests HTTP, que corren sin Postgres.
 //
@@ -17,6 +20,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FakeUserAccounts implements UserAccounts {
 
     private final Map<String, UserAccount> byFirebaseUid = new ConcurrentHashMap<>();
+    // Quien necesite enterarse de que una persona se borró (en producción lo
+    // hace la cascada de la base: sus perfiles y vehículos desaparecen con ella).
+    private final List<Consumer<String>> removalListeners = new CopyOnWriteArrayList<>();
 
     @Override
     public UserAccount findOrProvision(String firebaseUid, String email, String displayName) {
@@ -39,9 +45,14 @@ public class FakeUserAccounts implements UserAccounts {
     @Override
     public void remove(String firebaseUid) {
         byFirebaseUid.remove(firebaseUid);
+        removalListeners.forEach(listener -> listener.accept(firebaseUid));
     }
 
     // ---- Para el arnés y las aserciones ----
+
+    public void onRemove(Consumer<String> listener) {
+        removalListeners.add(listener);
+    }
 
     public void seed(String firebaseUid, String email, String displayName, UserRole role) {
         byFirebaseUid.put(firebaseUid, new UserAccount(
@@ -64,5 +75,6 @@ public class FakeUserAccounts implements UserAccounts {
 
     public void clear() {
         byFirebaseUid.clear();
+        removalListeners.clear();
     }
 }

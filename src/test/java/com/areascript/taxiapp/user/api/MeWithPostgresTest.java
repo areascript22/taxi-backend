@@ -1,6 +1,5 @@
 package com.areascript.taxiapp.user.api;
 
-import com.areascript.taxiapp.bootstrap.ApprovalStatusBackfill;
 import com.areascript.taxiapp.database.support.SharedPostgis;
 import com.areascript.taxiapp.driveradmin.api.SuperUserBootstrap;
 import com.google.cloud.firestore.Firestore;
@@ -33,6 +32,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -74,8 +74,6 @@ class MeWithPostgresTest {
     private TaskScheduler taskScheduler;
     @MockitoBean
     private SuperUserBootstrap superUserBootstrap;
-    @MockitoBean
-    private ApprovalStatusBackfill approvalStatusBackfill;
 
     @Autowired
     private WebApplicationContext context;
@@ -161,6 +159,42 @@ class MeWithPostgresTest {
 
         mvc.perform(get("/api/drivers").header("Authorization", token))
                 .andExpect(status().isForbidden());
+    }
+
+    // El camino completo de un conductor nuevo, sin Firestore de por medio:
+    // se registra, queda pendiente, un administrador lo aprueba y recién ahí
+    // puede ponerse en línea y reportar su ubicación.
+    @Test
+    void un_conductor_nuevo_se_registra_es_aprobado_y_puede_trabajar() throws Exception {
+        String token = token("nuevo-conductor", "nuevo@test.com", "Nuevo Conductor", Map.of());
+        String body = "{\"firstName\":\"Ana\",\"lastName\":\"Pérez\",\"phoneNumber\":\"0991112222\","
+                + "\"vehicle\":{\"plate\":\"PBX-1234\",\"brand\":\"Toyota\",\"model\":\"Corolla\","
+                + "\"year\":2020,\"color\":\"Amarillo\",\"registrationNumber\":\"REG-1\"}}";
+
+        mvc.perform(put("/api/me/driver-profile").header("Authorization", token)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.driver.approvalStatus").value("pending"))
+                .andExpect(jsonPath("$.driver.vehicle.plate").value("PBX-1234"))
+                .andExpect(jsonPath("$.displayName").value("Ana Pérez"));
+
+        // Pendiente: no puede ponerse en línea.
+        mvc.perform(put("/api/me/driver/availability").header("Authorization", token)
+                        .contentType("application/json").content("{\"online\":true}"))
+                .andExpect(status().isForbidden());
+
+        // Un administrador lo aprueba.
+        jdbc.update("UPDATE drivers SET approval_status = 'approved' WHERE user_id = "
+                + "(SELECT id FROM users WHERE firebase_uid = 'nuevo-conductor')");
+
+        mvc.perform(put("/api/me/driver/availability").header("Authorization", token)
+                        .contentType("application/json").content("{\"online\":true}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(put("/api/me/driver/location").header("Authorization", token)
+                        .contentType("application/json").content("{\"latitude\":-1.6635,\"longitude\":-78.6546}"))
+                .andExpect(status().isNoContent());
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM driver_locations", Integer.class)).isEqualTo(1);
     }
 
     @Test

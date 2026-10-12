@@ -1,4 +1,4 @@
-package com.areascript.taxiapp.driveradmin.infra;
+package com.areascript.taxiapp.characterization.support;
 
 import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
@@ -19,7 +19,6 @@ import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.cloud.firestore.SetOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -33,17 +32,25 @@ import java.util.concurrent.TimeoutException;
 
 // Conductores y vehículos en Firestore (colecciones "drivers" y "vehicles").
 // Es el único lugar que conoce los nombres de los campos y cómo se guardan.
-@Component
-public class FirestoreDriverRepository implements DriverRepository {
+// DOBLE DE PRUEBA del puerto DriverRepository para los tests HTTP, que corren sin
+// Postgres: guarda los conductores como DOCUMENTOS del FakeFirestore (colecciones
+// drivers y vehicles).
+//
+// Es la implementacion que tuvo el servidor mientras los perfiles vivian en
+// Firestore. En produccion el puerto lo implementa PostgresDriverRepository; aca
+// se conserva solo para que los tests de caracterizacion (que siembran y miran
+// documentos) sigan verificando el comportamiento del servidor sin depender de
+// donde se guarda. La base real se prueba aparte, contra Postgres.
+public class DocumentStoreDriverRepository implements DriverRepository {
 
-    private static final Logger log = LoggerFactory.getLogger(FirestoreDriverRepository.class);
+    private static final Logger log = LoggerFactory.getLogger(DocumentStoreDriverRepository.class);
     private static final String DRIVERS_COLLECTION = "drivers";
     private static final String VEHICLES_COLLECTION = "vehicles";
 
     private final Firestore firestore;
     private final long timeoutMillis;
 
-    public FirestoreDriverRepository(Firestore firestore, FirebaseProperties firebaseProperties) {
+    public DocumentStoreDriverRepository(Firestore firestore, FirebaseProperties firebaseProperties) {
         this.firestore = firestore;
         this.timeoutMillis = firebaseProperties.operationTimeout().toMillis();
     }

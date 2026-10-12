@@ -1,6 +1,7 @@
 package com.areascript.taxiapp.user.api;
 
 import com.areascript.taxiapp.characterization.support.CharacterizationTestBase;
+import com.areascript.taxiapp.characterization.support.FakeUserProfiles;
 import com.areascript.taxiapp.user.domain.AppProfile;
 import com.areascript.taxiapp.user.domain.DriverProfile;
 import com.areascript.taxiapp.user.domain.PassengerProfile;
@@ -108,9 +109,8 @@ class MeEndpointTest extends CharacterizationTestBase {
     // ---- PUT /api/me/device ----
 
     @Test
-    void registra_el_dispositivo_en_la_base_y_en_firestore() throws Exception {
+    void registra_el_dispositivo_en_el_perfil_de_esa_app() throws Exception {
         userProfiles.putDriver(idOf("c1"), new DriverProfile("", null, 5.0, "approved", null, null, false, false));
-        firestore.put("drivers/c1", Map.of("firstName", "Uno"));
 
         mvc.perform(put("/api/me/device").header("Authorization", userToken("c1"))
                         .contentType(JSON)
@@ -120,8 +120,7 @@ class MeEndpointTest extends CharacterizationTestBase {
         assertThat(userProfiles.savedDevices()).hasSize(1);
         assertThat(userProfiles.savedDevices().get(0).app()).isEqualTo(AppProfile.DRIVER);
         assertThat(userProfiles.savedDevices().get(0).fcmToken()).isEqualTo("tok-1");
-        assertThat(firestore.get("drivers/c1").get("fcmToken")).isEqualTo("tok-1");
-        assertThat(firestore.get("drivers/c1").get("language")).isEqualTo("en");
+        assertThat(userProfiles.savedDevices().get(0).language()).isEqualTo("en");
     }
 
     // Una persona con las dos apps tiene dos dispositivos: cada app escribe el suyo.
@@ -129,8 +128,6 @@ class MeEndpointTest extends CharacterizationTestBase {
     void el_token_de_cada_app_va_a_su_propio_perfil() throws Exception {
         userProfiles.putDriver(idOf("dual"), new DriverProfile("", null, 5.0, "approved", null, null, false, false));
         userProfiles.putPassenger(idOf("dual"), new PassengerProfile(null, "active", null));
-        firestore.put("drivers/dual", Map.of("firstName", "D"));
-        firestore.put("passengers/dual", Map.of("firstName", "P"));
         String token = userToken("dual");
 
         mvc.perform(put("/api/me/device").header("Authorization", token).contentType(JSON)
@@ -140,8 +137,11 @@ class MeEndpointTest extends CharacterizationTestBase {
                         .content("{\"app\":\"passenger\",\"fcmToken\":\"tok-passenger\"}"))
                 .andExpect(status().isNoContent());
 
-        assertThat(firestore.get("drivers/dual").get("fcmToken")).isEqualTo("tok-driver");
-        assertThat(firestore.get("passengers/dual").get("fcmToken")).isEqualTo("tok-passenger");
+        assertThat(userProfiles.savedDevices()).extracting(
+                        FakeUserProfiles.SavedDevice::app, FakeUserProfiles.SavedDevice::fcmToken)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(AppProfile.DRIVER, "tok-driver"),
+                        org.assertj.core.groups.Tuple.tuple(AppProfile.PASSENGER, "tok-passenger"));
     }
 
     @Test
@@ -150,7 +150,8 @@ class MeEndpointTest extends CharacterizationTestBase {
                         .contentType(JSON).content("{\"app\":\"driver\",\"fcmToken\":\"tok\"}"))
                 .andExpect(status().isNotFound());
 
-        assertThat(firestore.get("drivers/sinperfil")).isNull();
+        assertThat(userProfiles.savedDevices()).isEmpty();
+        assertThat(userProfiles.findDriver(idOf("sinperfil"))).isEmpty();
     }
 
     @Test

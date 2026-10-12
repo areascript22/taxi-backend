@@ -2,9 +2,6 @@ package com.areascript.taxiapp.user.application;
 
 import com.areascript.taxiapp.common.error.InvalidInputException;
 import com.areascript.taxiapp.common.error.NotFoundException;
-import com.areascript.taxiapp.notification.domain.Device;
-import com.areascript.taxiapp.notification.domain.DeviceWriter;
-import com.areascript.taxiapp.notification.domain.Recipient;
 import com.areascript.taxiapp.user.domain.AppProfile;
 import com.areascript.taxiapp.user.domain.UserAccount;
 import com.areascript.taxiapp.user.domain.UserAccounts;
@@ -18,12 +15,8 @@ import java.util.Set;
 //
 // El token y el idioma son por INSTALACIÓN: la misma persona con la misma cuenta
 // tiene uno en la app de conductor y otro en la de pasajero, y el push al
-// pasajero tiene que ir al segundo.
-//
-// Transición: se guarda en Postgres Y en Firestore. Las notificaciones todavía
-// leen de Firestore (DeviceRegistry/DeviceWriter) y las apps viejas siguen escribiendo ahí;
-// cuando se suba la versión mínima y el registro lea de Postgres, desaparece la
-// escritura en Firestore.
+// pasajero tiene que ir al segundo. Por eso se guardan en el perfil de la app
+// indicada, no en la persona.
 @Service
 public class DeviceRegistrationService {
 
@@ -34,12 +27,10 @@ public class DeviceRegistrationService {
 
     private final UserAccounts accounts;
     private final UserProfiles profiles;
-    private final DeviceWriter registry;
 
-    public DeviceRegistrationService(UserAccounts accounts, UserProfiles profiles, DeviceWriter registry) {
+    public DeviceRegistrationService(UserAccounts accounts, UserProfiles profiles) {
         this.accounts = accounts;
         this.profiles = profiles;
-        this.registry = registry;
     }
 
     public void register(
@@ -64,13 +55,9 @@ public class DeviceRegistrationService {
 
         UserAccount account = accounts.findOrProvision(firebaseUid, email, displayName);
 
-        boolean inPostgres = profiles.saveDevice(account.id(), appProfile, fcmToken, language);
-        Recipient recipient = appProfile == AppProfile.DRIVER
-                ? Recipient.driver(firebaseUid)
-                : Recipient.passenger(firebaseUid);
-        boolean inFirestore = registry.save(recipient, new Device(fcmToken, language));
-
-        if (!inPostgres && !inFirestore) {
+        // No se crea un perfil a medias: el perfil nace con el registro
+        // (PUT /api/me/driver-profile o /passenger-profile).
+        if (!profiles.saveDevice(account.id(), appProfile, fcmToken, language)) {
             throw new NotFoundException(appProfile == AppProfile.DRIVER
                     ? "Todavía no tienes perfil de conductor"
                     : "Todavía no tienes perfil de pasajero");

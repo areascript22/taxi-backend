@@ -20,7 +20,7 @@ negocio, solo tiene el esquema base de Flyway.
 | `account` | Que un usuario borre su propia cuenta | `DELETE /api/account` |
 | `driveradmin` | Panel de administración: listar, aprobar/rechazar, bloquear, cambiar rol y eliminar conductores | `GET /api/drivers`<br>`GET /api/drivers/{uid}`<br>`PUT /api/drivers/{uid}/role`<br>`PUT /api/drivers/{uid}/approval-status`<br>`PUT /api/drivers/{uid}/block-status`<br>`DELETE /api/drivers/{uid}` |
 | `appversion` | Decir si una versión de una app todavía se admite (versión mínima por app) | `GET /api/public/app-version?app=driver&version=1.0.7` — **público**, sin token |
-| `user` | Quién es la persona (identidad y rol guardados en Postgres) y sus perfiles de conductor y pasajero | `GET /api/me`<br>`PUT /api/me/device` |
+| `user` | Quién es la persona (identidad y rol guardados en Postgres) y sus perfiles de conductor y pasajero | `GET /api/me`<br>`PUT /api/me/driver-profile`<br>`PUT /api/me/passenger-profile`<br>`PUT /api/me/device` |
 | `dispatch` | Presencia de los conductores (en línea, ocupado, dónde están) y, más adelante, a quién se le ofrece un pedido | `PUT /api/me/driver/availability`<br>`PUT /api/me/driver/location` |
 | `notification` | Traducir y entregar notificaciones push | (ninguno: lo usan las demás features) |
 | `identity` | La cuenta de autenticación (roles, borrado) | (ninguno) |
@@ -106,9 +106,7 @@ hilo de la carrera.
 | Dato | Base | Quién escribe | Notas |
 |---|---|---|---|
 | Carrera en curso `taxi_requests/{passengerId}` | Realtime Database | El **servidor** (crear, asignar, llegada, inicio, cancelar, finalizar, vencer, borrar: todas las transiciones de estado). Las **apps** escriben directo solo `driver/location` | Una carrera por pasajero. Las apps escuchan este nodo en tiempo real. Se borra ~10 s después de terminar. |
-| Perfil de conductor `drivers/{uid}` | Firestore | La **app** (su perfil, `fcmToken`, `language`). El **servidor** (`role`, `approvalStatus`, `isBlocked` y sus metadatos) | Las reglas impiden que la app toque los campos de moderación. |
-| Vehículo `vehicles/{id}` | Firestore | La app | El servidor lo lee para mostrarlo al pasajero y lo borra con la cuenta. |
-| Perfil de pasajero `passengers/{uid}` | Firestore | La app | El servidor lee `fcmToken`/`language` para notificar. |
+| Persona `users`, perfiles `drivers` / `passengers` y vehículo `vehicles` | **Postgres** | Solo el **servidor** (`PUT /api/me/driver-profile`, `/passenger-profile`, `/device` y el panel de administración) | Las apps no escriben perfiles: mandan sus datos al servidor, que valida y decide aprobación, rol y bloqueo. |
 | Chat `chats/{rideId}` y `.../messages` | Firestore | **Solo el servidor** | Las reglas niegan escrituras de clientes. Los mensajes llevan `expireAt` (+7 días); los borra la política TTL de Firestore. |
 | Fotos de perfil `*_profile_photos/{uid}.jpg` | Storage | La app | El servidor las borra al eliminar la cuenta. |
 | Cuenta, login, claims `admin`/`superuser` | Authentication | Login: las apps. Claims y borrado: el servidor | El servidor verifica el ID token en cada request. |
@@ -287,13 +285,11 @@ Cosas que **no están resueltas** y conviene tener presentes:
 - **`findInProgressOf` lee todo `taxi_requests`** y filtra en memoria;
   **`listAllDrivers` hace una lectura de vehículo por conductor**.
 - **`DriverResponse` incluye el `fcmToken`** de cada conductor.
-- **Las reglas de Firestore dejan leer `drivers/` y `passengers/` a cualquier
+- **(Hasta cerrar el paso final de la migración de perfiles) Las reglas de
+  Firestore dejan leer `drivers/` y `passengers/` a cualquier
   usuario autenticado** (incluido teléfono y `fcmToken`).
 - **El CI (`.github/workflows/deploy-qa.yml`) compila con `-DskipTests`** y usa
   JDK 26 mientras el proyecto es Java 21: los tests no corren antes de desplegar.
-- **`bootstrap/ApprovalStatusBackfill`** es un script de una sola corrida que
-  habla directo con Firestore; se puede borrar cuando ya se ejecutó en
-  producción.
 - **Postgres y el servidor comparten un único droplet de 1 vCPU / 2 GB.** Los
   límites de memoria de `compose.yaml` (db 640 MB, app 900 MB) existen para que
   uno no mate al otro. Sin alta disponibilidad: si el droplet cae, cae todo.
@@ -310,9 +306,9 @@ Migración por pasos; el estado real hoy:
 | Paso | Qué | Estado |
 |---|---|---|
 | 1 | Postgres/PostGIS en Docker + Flyway (esquema base) + backups | Hecho. Ninguna feature lee ni escribe en la base todavía. |
-| 2a | Modelo `users` + `roles` + `drivers` / `passengers` / `vehicles` (V2 y V3), entidades JPA y copia desde Firestore | Hecho. Se llenan con el importador; nadie las lee todavía. |
-| 2b | Endpoints de perfil en el servidor y apps escribiendo por ahí (Firestore deja de ser fuente de verdad) | Pendiente |
-| 2c | `DriverRepository`, `DeviceRegistry`, etc. leen de Postgres | Pendiente |
+| 2a | Modelo `users` + `roles` + `drivers` / `passengers` / `vehicles` (V2 y V3) y entidades JPA | Hecho |
+| 2b | Endpoints de perfil en el servidor (`driver-profile`, `passenger-profile`) | Hecho en el servidor. Las apps todavía escriben en Firestore. |
+| 2c | `DriverRepository` y `DeviceRegistry` leen y escriben en Postgres; sin importador | Hecho |
 | 3a | Presencia de conductores y ubicación en PostGIS (V5): interruptor en línea, ubicación, ocupado/libre derivado de la carrera, consulta por radio | Hecho. Falta el despacho por anillos que la use. |
 | 3b | Despacho por anillos y bandeja de ofertas por conductor (`driver_offers/{uid}`) | Hecho en el servidor. Las apps todavía no escuchan la bandeja; `enforce-offers` sigue apagado. |
 | 3c | Apps: ubicación por HTTP y escuchar la bandeja en vez de `taxi_requests`; subir versión mínima; `enforce-offers=true`; cerrar reglas | Pendiente |
@@ -464,15 +460,20 @@ todavía leen de Firestore y las apps viejas siguen escribiendo ahí.
 sus records (`Driver`, `Vehicle`). Hibernate corre con `ddl-auto=validate`: si una
 entidad no coincide con las tablas de Flyway, el servidor no arranca.
 
-**Copiar los perfiles de Firestore a Postgres.** Una sola corrida, idempotente,
-solo LEE Firestore (ver `bootstrap/FirestoreToPostgresImporter`):
+**Alta y edición de perfiles.** El único camino para escribir un perfil es el
+servidor (`PUT /api/me/driver-profile` y `PUT /api/me/passenger-profile`).
+Firestore ya no guarda perfiles: solo conserva los chats.
 
-```bash
-java -jar taxiapp.jar --taxiapp.import.firestore-to-postgres=true
-```
-
-Se puede repetir; cada fila se sobrescribe con lo que haya en Firestore. No
-borra. Mientras las apps sigan escribiendo perfiles en Firestore, Postgres se
-desactualiza: por eso la copia es un paso previo, no la migración completa.
+- **Idempotente (PUT):** crear y editar son la misma llamada; un doble toque o un
+  reintento por timeout no duplica nada.
+- **Nace `pending`:** el cliente no decide aprobación, rol, bloqueo ni
+  calificación (el request ni siquiera los modela).
+- **Foto:** la sube la app a Storage (reglas por uid) y manda la URL. El
+  servidor no recibe el archivo, así que solo acepta la URL que apunta a SU
+  objeto (`ProfilePhotoUrl`: host, bucket, carpeta y uid exactos).
+- **Vehículo:** cambiar la placa o la matrícula devuelve la verificación del
+  vehículo a `pending`; cambiar el color, por ejemplo, no.
+- **Validación:** los mismos límites que los `CHECK` de la base, para responder
+  400 con un mensaje útil y no un 500.
 
 **Backups y restauración.** Ver [`ops/README.md`](ops/README.md).

@@ -1,5 +1,6 @@
 package com.areascript.taxiapp.user.infra;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -36,6 +37,18 @@ public interface UserRowRepository extends JpaRepository<UserRow, UUID> {
     @Query("UPDATE UserRow u SET u.roleCode = :role, u.updatedAt = CURRENT_TIMESTAMP "
             + "WHERE u.firebaseUid = :uid")
     int updateRole(@Param("uid") String firebaseUid, @Param("role") String roleCode);
+
+    // Las personas que TIENEN perfil de conductor, ordenadas por uid de Firebase
+    // (el orden en que las ve el panel de administración). La paginación es por
+    // cursor sobre ese mismo campo: estable aunque se agreguen conductores
+    // mientras se navega, a diferencia de un OFFSET.
+    @Query("SELECT u FROM UserRow u WHERE u.id IN (SELECT d.userId FROM DriverRow d) "
+            + "ORDER BY u.firebaseUid")
+    List<UserRow> findAllDriverUsers();
+
+    @Query("SELECT u FROM UserRow u WHERE u.id IN (SELECT d.userId FROM DriverRow d) "
+            + "AND u.firebaseUid > :cursor ORDER BY u.firebaseUid")
+    List<UserRow> findDriverUsersAfter(@Param("cursor") String cursor, Pageable pageable);
 
     // Borrado masivo: la cascada de los perfiles y vehículos la hace la base
     // (ON DELETE CASCADE), no JPA.
