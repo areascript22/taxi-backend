@@ -53,7 +53,7 @@ class MeEndpointTest extends CharacterizationTestBase {
     void devuelve_el_rol_guardado_y_los_perfiles_de_las_dos_apps() throws Exception {
         String token = adminToken("ana");
         userProfiles.putDriver(idOf("ana"), new DriverProfile(
-                "0991112222", "https://p/ana.jpg", 4.5, "approved", "es",
+                "0991112222", "https://p/ana.jpg", 4.5, "approved", null, "es",
                 new VehicleSummary("v1", "PBX-1234", "Toyota", "Corolla", 2020, "Amarillo", "REG-1", "pending"),
                 true, false));
         userProfiles.putPassenger(idOf("ana"), new PassengerProfile(null, "active", "en"));
@@ -62,6 +62,8 @@ class MeEndpointTest extends CharacterizationTestBase {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("admin"))
                 .andExpect(jsonPath("$.driver.approvalStatus").value("approved"))
+                .andExpect(jsonPath("$.driver.rejectionReason").doesNotExist())
+                .andExpect(jsonPath("$.blockReason").doesNotExist())
                 .andExpect(jsonPath("$.driver.vehicle.plate").value("PBX-1234"))
                 .andExpect(jsonPath("$.driver.vehicle.year").value(2020))
                 .andExpect(jsonPath("$.passenger.status").value("active"))
@@ -110,7 +112,7 @@ class MeEndpointTest extends CharacterizationTestBase {
 
     @Test
     void registra_el_dispositivo_en_el_perfil_de_esa_app() throws Exception {
-        userProfiles.putDriver(idOf("c1"), new DriverProfile("", null, 5.0, "approved", null, null, false, false));
+        userProfiles.putDriver(idOf("c1"), new DriverProfile("", null, 5.0, "approved", null, null, null, false, false));
 
         mvc.perform(put("/api/me/device").header("Authorization", userToken("c1"))
                         .contentType(JSON)
@@ -126,7 +128,7 @@ class MeEndpointTest extends CharacterizationTestBase {
     // Una persona con las dos apps tiene dos dispositivos: cada app escribe el suyo.
     @Test
     void el_token_de_cada_app_va_a_su_propio_perfil() throws Exception {
-        userProfiles.putDriver(idOf("dual"), new DriverProfile("", null, 5.0, "approved", null, null, false, false));
+        userProfiles.putDriver(idOf("dual"), new DriverProfile("", null, 5.0, "approved", null, null, null, false, false));
         userProfiles.putPassenger(idOf("dual"), new PassengerProfile(null, "active", null));
         String token = userToken("dual");
 

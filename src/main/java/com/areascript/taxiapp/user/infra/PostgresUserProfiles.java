@@ -211,6 +211,7 @@ public class PostgresUserProfiles implements UserProfiles {
                 row.getPhotoUrl(),
                 row.getRating(),
                 row.getApprovalStatus(),
+                row.getRejectionReason(),
                 row.getLanguage(),
                 vehicle,
                 row.isOnline(),

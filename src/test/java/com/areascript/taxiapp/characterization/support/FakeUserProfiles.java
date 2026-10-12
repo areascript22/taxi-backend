@@ -69,6 +69,7 @@ public class FakeUserProfiles implements UserProfiles {
                 data.photoUrl(),
                 existing == null ? 5.0 : existing.rating(),
                 existing == null ? "pending" : existing.approvalStatus(),
+                existing == null ? null : existing.rejectionReason(),
                 existing == null ? null : existing.language(),
                 vehicle,
                 existing != null && existing.online(),

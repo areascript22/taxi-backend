@@ -81,14 +81,15 @@ public class PostgresUserAccounts implements UserAccounts {
     }
 
     private static UserAccount toAccount(UserRow row) {
-        String displayName = (row.getFirstName() + " " + row.getLastName()).trim();
         return new UserAccount(
                 row.getId(),
                 row.getFirebaseUid(),
                 row.getEmail(),
-                displayName,
+                row.getFirstName(),
+                row.getLastName(),
                 UserRole.fromStored(row.getRoleCode()),
-                row.isBlocked());
+                row.isBlocked(),
+                row.getBlockReason());
     }
 
     private static String truncate(String value, int max) {

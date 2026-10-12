@@ -74,7 +74,7 @@ class ProfileEndpointTest extends CharacterizationTestBase {
 
     @Test
     void editar_conserva_la_aprobacion_que_ya_tenia() throws Exception {
-        userProfiles.putDriver(idOf("d1"), new DriverProfile("0990000000", null, 4.8, "approved", null, null, false, false));
+        userProfiles.putDriver(idOf("d1"), new DriverProfile("0990000000", null, 4.8, "approved", null, null, null, false, false));
 
         mvc.perform(put("/api/me/driver-profile").header("Authorization", userToken("d1"))
                         .contentType(JSON).content(driverBody(null, "PBX-1234", 2020)))

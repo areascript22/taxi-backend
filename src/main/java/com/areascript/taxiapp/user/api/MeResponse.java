@@ -12,8 +12,11 @@ public record MeResponse(
         String uid,
         String email,
         String displayName,
+        String firstName,
+        String lastName,
         String role,
         boolean blocked,
+        String blockReason,
         Driver driver,
         Passenger passenger
 ) {
@@ -23,6 +26,7 @@ public record MeResponse(
             String photoUrl,
             double rating,
             String approvalStatus,
+            String rejectionReason,
             String language,
             Vehicle vehicle,
             boolean online,
@@ -55,8 +59,11 @@ public record MeResponse(
                 profile.account().firebaseUid(),
                 profile.account().email(),
                 profile.account().displayName(),
+                profile.account().firstName(),
+                profile.account().lastName(),
                 profile.account().role().code(),
                 profile.account().blocked(),
+                profile.account().blockReason(),
                 profile.driver() == null ? null : driver(profile.driver()),
                 profile.passenger() == null ? null : passenger(profile.passenger()));
     }
@@ -68,6 +75,7 @@ public record MeResponse(
                 profile.photoUrl(),
                 profile.rating(),
                 profile.approvalStatus(),
+                profile.rejectionReason(),
                 profile.language(),
                 vehicle == null ? null : new Vehicle(
                         vehicle.vehicleId(),

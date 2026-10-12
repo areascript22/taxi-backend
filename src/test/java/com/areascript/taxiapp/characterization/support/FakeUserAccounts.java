@@ -31,15 +31,18 @@ public class FakeUserAccounts implements UserAccounts {
                 uid,
                 email == null ? "" : email,
                 displayName == null ? "" : displayName,
+                "",
                 UserRole.USER,
-                false));
+                false,
+                null));
     }
 
     @Override
     public void setRole(String firebaseUid, UserRole role) {
         UserAccount current = findOrProvision(firebaseUid, "", "");
         byFirebaseUid.put(firebaseUid, new UserAccount(
-                current.id(), current.firebaseUid(), current.email(), current.displayName(), role, current.blocked()));
+                current.id(), current.firebaseUid(), current.email(), current.firstName(), current.lastName(), role,
+                current.blocked(), current.blockReason()));
     }
 
     @Override
@@ -60,8 +63,10 @@ public class FakeUserAccounts implements UserAccounts {
                 firebaseUid,
                 email == null ? "" : email,
                 displayName == null ? "" : displayName,
+                "",
                 role,
-                false));
+                false,
+                null));
     }
 
     public UserRole roleOf(String firebaseUid) {
