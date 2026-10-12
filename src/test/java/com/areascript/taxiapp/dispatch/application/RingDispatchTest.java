@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -266,6 +267,44 @@ class RingDispatchTest extends CharacterizationTestBase {
         runTask(2);                     // el anillo 2 de ESTA búsqueda sigue siendo de 6 km
 
         assertThat(offer("medio", "p1")).isNotNull();
+    }
+
+    // ---- El vencimiento de la solicitud no puede cortar la búsqueda ----
+
+    private long expirySeconds() {
+        Instant at = scheduledTasks().get(0).at();
+        return Duration.between(Instant.now(), at).toSeconds();
+    }
+
+    @Test
+    void si_el_administrador_alarga_los_anillos_el_vencimiento_se_alarga_con_ellos() throws Exception {
+        // 3 anillos de 20 s = 60 s de búsqueda: con un vencimiento fijo de 35 s
+        // la solicitud moriría en mitad del anillo 2.
+        dispatchPlans.use(new DispatchPlan(List.of(
+                new DispatchRing(1, 3000, Duration.ofSeconds(20), 10),
+                new DispatchRing(2, 6000, Duration.ofSeconds(20), 10),
+                new DispatchRing(3, 9000, Duration.ofSeconds(20), 10)), Duration.ofSeconds(45)));
+
+        requestRide("p1");
+
+        assertThat(expirySeconds()).as("60 s de anillos + 5 s de margen").isBetween(63L, 66L);
+    }
+
+    @Test
+    void con_los_anillos_por_defecto_el_vencimiento_sigue_siendo_el_configurado() throws Exception {
+        requestRide("p1");                      // 3 x 10 s = 30 s + 5 s = 35 s
+
+        assertThat(expirySeconds()).isBetween(33L, 36L);
+    }
+
+    @Test
+    void anillos_cortos_no_acortan_el_vencimiento_por_debajo_del_minimo_configurado() throws Exception {
+        dispatchPlans.use(new DispatchPlan(List.of(
+                new DispatchRing(1, 3000, Duration.ofSeconds(5), 10)), Duration.ofSeconds(45)));
+
+        requestRide("p1");
+
+        assertThat(expirySeconds()).as("el minimo configurado (35 s) manda").isBetween(33L, 36L);
     }
 
     @Test

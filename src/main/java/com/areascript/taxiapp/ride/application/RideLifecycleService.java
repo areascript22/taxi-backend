@@ -6,6 +6,8 @@ import com.areascript.taxiapp.common.error.ConflictException;
 import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.error.ForbiddenException;
 import com.areascript.taxiapp.common.error.NotFoundException;
+import com.areascript.taxiapp.dispatch.domain.DispatchPlan;
+import com.areascript.taxiapp.dispatch.domain.DispatchPlans;
 import com.areascript.taxiapp.dispatch.domain.NoDriversAvailable;
 import com.areascript.taxiapp.dispatch.domain.OfferInbox;
 import com.areascript.taxiapp.driveradmin.domain.ApprovalStatus;
@@ -36,6 +38,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.time.Duration;
 
 // Casos de uso que cambian una carrera: pedir, aceptar, cancelar y finalizar.
 // Las reglas de qué cambio procede viven en RideTransitions; acá se
@@ -46,12 +49,17 @@ public class RideLifecycleService {
 
     private static final Logger log = LoggerFactory.getLogger(RideLifecycleService.class);
 
+    // Holgura entre que termina el último anillo y que el sistema vence la
+    // solicitud: el cierre "no hay vehículos" del despacho debe ganar siempre.
+    private static final Duration EXPIRY_MARGIN = Duration.ofSeconds(5);
+
     private final RideRepository rides;
     private final DriverRepository drivers;
     private final UserNotifier notifier;
     private final ApplicationEventPublisher events;
     private final RideTimers timers;
     private final OfferInbox offers;
+    private final DispatchPlans dispatchPlans;
     private final DispatchProperties dispatchProperties;
     private final TaxiappProperties.Rides settings;
     private final Clock clock;
@@ -63,6 +71,7 @@ public class RideLifecycleService {
             ApplicationEventPublisher events,
             RideTimers timers,
             OfferInbox offers,
+            DispatchPlans dispatchPlans,
             DispatchProperties dispatchProperties,
             TaxiappProperties properties,
             Clock clock
@@ -73,6 +82,7 @@ public class RideLifecycleService {
         this.events = events;
         this.timers = timers;
         this.offers = offers;
+        this.dispatchPlans = dispatchPlans;
         this.dispatchProperties = dispatchProperties;
         this.settings = properties.rides();
         this.clock = clock;
@@ -105,21 +115,48 @@ public class RideLifecycleService {
         }
         log.info("RideDebug | Solicitud creada para passengerId={}", passengerId);
 
-        // Margen que le damos al cliente para cancelar por su cuenta (el
-        // diálogo "Buscando conductor" de passenger_app usa 30 s) antes de que
-        // el backend intervenga: cubre el caso de que el pasajero cierre la
-        // app y nunca la vuelva a abrir, donde de otra forma la solicitud
-        // quedaría 'pending' para siempre.
+        // Red de seguridad: si pasado este margen la solicitud sigue 'pending'
+        // (el pasajero cerró la app y nunca la volvió a abrir, o el servidor se
+        // reinició a mitad de la búsqueda), el backend la cancela. De otra
+        // forma quedaría 'pending' para siempre.
         //
         // La tarea lleva el rideId de ESTA solicitud: si el pasajero cancela y
         // vuelve a pedir dentro de la ventana, la tarea vieja no puede vencer
         // a la nueva.
-        timers.expireAfter(settings.pendingRequestExpiry(), () -> expireIfStillPending(passengerId, rideId));
+        timers.expireAfter(expiryFor(), () -> expireIfStillPending(passengerId, rideId));
 
         // Quien reacciona a que hay una solicitud nueva (hoy, el despacho busca a
         // quién ofrecérsela) se entera por el evento; no puede revertirla.
         events.publishEvent(new RideRequested(rideId, passengerId, passengerName,
                 pickup.latitude(), pickup.longitude(), pickup.address(), pickup.sector()));
+    }
+
+    // Cuánto esperar antes de que el sistema venza una solicitud sin conductor.
+    //
+    // No puede ser menor que lo que dura la búsqueda por anillos: si un
+    // administrador alarga las esperas (3 anillos de 20 s = 60 s) y el
+    // vencimiento fuera un valor fijo de 35 s, la solicitud moriría en mitad del
+    // anillo 2 y los anillos siguientes nunca llegarían a ofrecerse. Es el
+    // MAYOR entre el mínimo configurado y la búsqueda completa más un margen.
+    private Duration expiryFor() {
+        Duration configured = settings.pendingRequestExpiry();
+        if (!dispatchProperties.enabled()) {
+            return configured;
+        }
+        try {
+            DispatchPlan plan = dispatchPlans.current();
+            if (plan.isEmpty()) {
+                return configured;
+            }
+            Duration search = plan.totalWait().plus(EXPIRY_MARGIN);
+            return search.compareTo(configured) > 0 ? search : configured;
+        } catch (RuntimeException e) {
+            // Sin la configuración no hay forma de calcularlo: el mínimo
+            // configurado es un valor seguro (el despacho tampoco va a poder
+            // leerla, y la solicitud simplemente vence).
+            log.warn("RideDebug | No se pudo leer el plan de despacho para el vencimiento: {}", e.getMessage());
+            return configured;
+        }
     }
 
     // Tarea agendada desde requestRide: si pasado el margen la solicitud sigue
