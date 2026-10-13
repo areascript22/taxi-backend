@@ -38,6 +38,11 @@ public class FakeUserAccounts implements UserAccounts {
     }
 
     @Override
+    public java.util.Optional<UserAccount> find(String firebaseUid) {
+        return java.util.Optional.ofNullable(byFirebaseUid.get(firebaseUid));
+    }
+
+    @Override
     public void setRole(String firebaseUid, UserRole role) {
         UserAccount current = findOrProvision(firebaseUid, "", "");
         byFirebaseUid.put(firebaseUid, new UserAccount(

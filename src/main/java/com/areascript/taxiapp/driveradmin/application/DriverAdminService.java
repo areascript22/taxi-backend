@@ -110,24 +110,14 @@ public class DriverAdminService {
         // nunca se dispara con callerIsSuperUser=true.
         ModerationPolicy.assertCanModerate(rolesOf(uid), true);
 
-        identityProvider.setRoles(uid, newRole == DriverRole.ADMIN, false);
+        drivers.updateRole(uid, newRole);
 
-        try {
-            drivers.updateRole(uid, newRole);
-        } catch (ExternalServiceException e) {
-            // Los claims ya cambiaron pero el campo no: queda desalineado hasta
-            // que se repita la operación. Se deja constancia para diagnosticarlo.
-            log.error("DriverAdminDebug | El custom claim de uid={} se actualizó pero falló el campo 'role'", uid);
-            throw e;
-        }
-
-        // El rol que manda en cada request es el de la base: si este paso
-        // falla, los claims y Firestore ya cambiaron pero los permisos reales
-        // no. Se repite la operación para corregirlo (es idempotente).
+        // El rol que manda en cada request es el de la base (users.role_code).
+        // Idempotente: si falla, se repite la operación.
         try {
             userAccounts.setRole(uid, newRole == DriverRole.ADMIN ? UserRole.ADMIN : UserRole.USER);
         } catch (ExternalServiceException e) {
-            log.error("DriverAdminDebug | El rol de uid={} cambió en Firebase pero falló en la base de usuarios", uid);
+            log.error("DriverAdminDebug | No se pudo guardar el rol de uid={} en la base de usuarios", uid);
             throw e;
         }
 
@@ -177,7 +167,8 @@ public class DriverAdminService {
     }
 
     private AccountRoles rolesOf(String uid) {
-        AccountRoles roles = identityProvider.findRoles(uid).orElseThrow(() -> driverNotFound(uid));
+        UserRole role = userAccounts.find(uid).orElseThrow(() -> driverNotFound(uid)).role();
+        AccountRoles roles = new AccountRoles(role.isAdmin(), role.isSuperUser());
         log.info("DriverAdminDebug | roles de uid={}: admin={}, superUser={}", uid, roles.admin(), roles.superUser());
         return roles;
     }

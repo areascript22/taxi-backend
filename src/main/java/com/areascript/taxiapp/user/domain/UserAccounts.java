@@ -17,6 +17,10 @@ public interface UserAccounts {
     // los de una persona que ya existe.
     UserAccount findOrProvision(String firebaseUid, String email, String displayName);
 
+    // La persona con ese uid, o vacío si no existe. No la crea: es para
+    // consultar a un tercero (p. ej. el rol de a quien se va a moderar).
+    java.util.Optional<UserAccount> find(String firebaseUid);
+
     // Cambia el rol. Si la persona no existe todavía, la crea.
     void setRole(String firebaseUid, UserRole role);
 

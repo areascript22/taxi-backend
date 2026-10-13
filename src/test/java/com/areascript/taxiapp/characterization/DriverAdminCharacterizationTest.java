@@ -1,6 +1,7 @@
 package com.areascript.taxiapp.characterization;
 
 import com.areascript.taxiapp.characterization.support.CharacterizationTestBase;
+import com.areascript.taxiapp.user.domain.UserRole;
 import com.google.cloud.Timestamp;
 import com.google.firebase.auth.AuthErrorCode;
 import org.junit.jupiter.api.Nested;
@@ -258,7 +259,7 @@ class DriverAdminCharacterizationTest extends CharacterizationTestBase {
     class Rol {
 
         @Test
-        void un_superuser_promueve_a_admin_en_auth_y_en_firestore() throws Exception {
+        void un_superuser_promueve_a_admin_en_la_base() throws Exception {
             storedDriver("d1", Map.of());
             authUser("d1", Map.of());
 
@@ -266,7 +267,7 @@ class DriverAdminCharacterizationTest extends CharacterizationTestBase {
                             .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"admin\"}"))
                     .andExpect(status().isNoContent());
 
-            verify(firebaseAuth).setCustomUserClaims("d1", Map.of("admin", true, "superuser", false));
+            assertThat(users.roleOf("d1")).isEqualTo(UserRole.ADMIN);
             assertThat(firestore.get("drivers/d1")).containsEntry("role", "admin");
         }
 
@@ -279,7 +280,7 @@ class DriverAdminCharacterizationTest extends CharacterizationTestBase {
                             .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"driver\"}"))
                     .andExpect(status().isNoContent());
 
-            verify(firebaseAuth).setCustomUserClaims("a1", Map.of("admin", false, "superuser", false));
+            assertThat(users.roleOf("a1")).isEqualTo(UserRole.USER);
             assertThat(firestore.get("drivers/a1")).containsEntry("role", "driver");
         }
 

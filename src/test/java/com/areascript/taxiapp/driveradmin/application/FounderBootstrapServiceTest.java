@@ -7,8 +7,6 @@ import com.areascript.taxiapp.driveradmin.domain.DriverPage;
 import com.areascript.taxiapp.driveradmin.domain.DriverRepository;
 import com.areascript.taxiapp.driveradmin.domain.DriverRole;
 import com.areascript.taxiapp.driveradmin.domain.Driver;
-import com.areascript.taxiapp.identity.domain.AccountRoles;
-import com.areascript.taxiapp.identity.domain.IdentityProvider;
 import com.areascript.taxiapp.user.domain.UserAccount;
 import com.areascript.taxiapp.user.domain.UserAccounts;
 import com.areascript.taxiapp.user.domain.UserRole;
@@ -32,29 +30,7 @@ class FounderBootstrapServiceTest {
 
     private final List<String> calls = new ArrayList<>();
 
-    private Optional<AccountRoles> accountRoles = Optional.empty();
-    private RuntimeException identityFailure;
     private RuntimeException ensureRoleFailure;
-
-    private final IdentityProvider identity = new IdentityProvider() {
-        @Override
-        public Optional<AccountRoles> findRoles(String uid) {
-            if (identityFailure != null) {
-                throw identityFailure;
-            }
-            return accountRoles;
-        }
-
-        @Override
-        public void setRoles(String uid, boolean admin, boolean superUser) {
-            calls.add("setRoles " + uid + " admin=" + admin + " superUser=" + superUser);
-        }
-
-        @Override
-        public void delete(String uid) {
-            throw new UnsupportedOperationException();
-        }
-    };
 
     private final DriverRepository drivers = new DriverRepository() {
         @Override
@@ -107,6 +83,11 @@ class FounderBootstrapServiceTest {
         }
 
         @Override
+        public Optional<UserAccount> find(String firebaseUid) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void setRole(String firebaseUid, UserRole role) {
             if (userRoleFailure != null) {
                 throw userRoleFailure;
@@ -123,7 +104,7 @@ class FounderBootstrapServiceTest {
     private FounderBootstrapService service(String founderUid) {
         TaxiappProperties properties = new TaxiappProperties(
                 RIDES, CHAT, new TaxiappProperties.Admin(founderUid, "founder@test.com"));
-        return new FounderBootstrapService(identity, drivers, userAccounts, properties);
+        return new FounderBootstrapService(drivers, userAccounts, properties);
     }
 
     @Test
@@ -134,67 +115,34 @@ class FounderBootstrapServiceTest {
         assertThat(calls).isEmpty();
     }
 
+    // Idempotente: cada arranque re-sincroniza el rol por si una corrida
+    // anterior falló a mitad de camino.
     @Test
-    void si_la_cuenta_no_existe_en_este_proyecto_se_omite() {
-        accountRoles = Optional.empty();
-
-        service("f1").ensureFounderIsSuperUser();
-
-        assertThat(calls).isEmpty();
-    }
-
-    @Test
-    void promueve_a_superuser_y_sincroniza_el_rol() {
-        accountRoles = Optional.of(AccountRoles.NONE);
-
-        service("f1").ensureFounderIsSuperUser();
-
-        assertThat(calls).containsExactly(
-                "setRoles f1 admin=true superUser=true",
-                "ensureRole f1 superuser");
-    }
-
-    // Idempotente: no reasigna un claim que ya está, pero sí re-sincroniza el
-    // rol por si una corrida anterior falló a mitad de camino.
-    @Test
-    void si_ya_es_superuser_solo_sincroniza_el_rol() {
-        accountRoles = Optional.of(new AccountRoles(true, true));
-
+    void sincroniza_el_rol_del_fundador() {
         service("f1").ensureFounderIsSuperUser();
 
         assertThat(calls).containsExactly("ensureRole f1 superuser");
     }
 
-    // Nunca impide el arranque.
-    @Test
-    void un_fallo_al_consultar_no_se_propaga() {
-        identityFailure = new ExternalServiceException("firebase caído", new RuntimeException());
-
-        assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
-        assertThat(calls).isEmpty();
-    }
-
-    @Test
-    void un_fallo_al_sincronizar_el_rol_no_se_propaga() {
-        accountRoles = Optional.of(new AccountRoles(true, true));
-        ensureRoleFailure = new ExternalServiceException("firestore caído", new RuntimeException());
-
-        assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
-    }
-
     // El rol que manda en cada request es el de la base de usuarios.
     @Test
     void el_fundador_queda_como_superuser_en_la_base_de_usuarios() {
-        accountRoles = Optional.of(AccountRoles.NONE);
-
         service("f1").ensureFounderIsSuperUser();
 
         assertThat(userRoleCalls).containsExactly("f1 superuser");
     }
 
+    // Nunca impide el arranque.
+    @Test
+    void un_fallo_al_sincronizar_el_rol_no_se_propaga_y_se_intenta_el_otro_paso() {
+        ensureRoleFailure = new ExternalServiceException("firestore caído", new RuntimeException());
+
+        assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
+        assertThat(userRoleCalls).containsExactly("f1 superuser");
+    }
+
     @Test
     void un_fallo_al_guardar_el_rol_en_la_base_no_se_propaga() {
-        accountRoles = Optional.of(new AccountRoles(true, true));
         userRoleFailure = new ExternalServiceException("postgres caído", new RuntimeException());
 
         assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();

@@ -194,6 +194,14 @@ public abstract class CharacterizationTestBase {
     // Usuario tal como lo ve Firebase Auth (custom claims), para las acciones
     // de moderación y borrado que consultan getUser antes de actuar.
     protected void authUser(String uid, Map<String, Object> customClaims) throws Exception {
+        // El rol que cuenta es el de la base de usuarios; los claims del
+        // UserRecord ya no deciden nada. Solo se siembra si la persona no estaba.
+        if (!users.exists(uid)) {
+            UserRole role = Boolean.TRUE.equals(customClaims.get("superuser"))
+                    ? UserRole.SUPERUSER
+                    : Boolean.TRUE.equals(customClaims.get("admin")) ? UserRole.ADMIN : UserRole.USER;
+            users.seed(uid, uid + "@test.com", "", role);
+        }
         UserRecord user = mock(UserRecord.class);
         when(user.getUid()).thenReturn(uid);
         when(user.getCustomClaims()).thenReturn(customClaims);

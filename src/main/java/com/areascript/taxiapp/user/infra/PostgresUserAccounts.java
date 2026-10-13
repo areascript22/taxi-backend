@@ -58,6 +58,17 @@ public class PostgresUserAccounts implements UserAccounts {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<UserAccount> find(String firebaseUid) {
+        try {
+            return users.findByFirebaseUid(firebaseUid).map(PostgresUserAccounts::toAccount);
+        } catch (DataAccessException e) {
+            log.error("UserDebug | No se pudo consultar a uid={}: {}", firebaseUid, e.getMessage(), e);
+            throw new ExternalServiceException("No se pudo consultar al usuario", e);
+        }
+    }
+
+    @Override
     @Transactional
     public void setRole(String firebaseUid, UserRole role) {
         try {
