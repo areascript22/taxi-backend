@@ -80,6 +80,25 @@ services:
     mem_limit: 900m
     logging: *log-rotation
 
+  # Proxy con TLS automático. Es el único servicio que publica 80/443.
+  # Sin `depends_on: app`: durante un despliegue el proxy sigue en pie (responde
+  # 502 unos segundos) en vez de caerse con la app y pedir otra vez todo.
+  # Los volúmenes conservan los certificados: no se borran con `down -v`.
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    logging: *log-rotation
+
   # Panel web para ver y consultar las tablas. Es una HERRAMIENTA, no parte del
   # servicio: está en el perfil "tools", así que `docker compose up -d` NO lo
   # levanta (gasta ~250 MB que el droplet no tiene de sobra). Se pide por nombre:
@@ -118,3 +137,5 @@ services:
 volumes:
   pgdata:
   pgadmin-data:
+  caddy_data:
+  caddy_config:
