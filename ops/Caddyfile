@@ -1,0 +1,5 @@
+# Proxy inverso con TLS automático (Let's Encrypt). Lo monta el servicio `caddy`
+# de compose.yaml. `app` es el nombre del servicio en la red interna de compose.
+taxigo.juniorz.dev {
+	reverse_proxy app:8080
+}

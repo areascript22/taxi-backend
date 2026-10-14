@@ -41,3 +41,8 @@ firebase-service-account*.json
 .env.*
 application-secrets.properties
 application-local.properties
+!.env.example
+
+### Artefactos locales ###
+*.log
+taxiapp.tar
