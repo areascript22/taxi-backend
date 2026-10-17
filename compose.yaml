@@ -99,6 +99,35 @@ services:
     mem_limit: 128m
     logging: *log-rotation
 
+  # Túnel de Cloudflare: lo usa STAGING (la VM de la laptop) en lugar de Caddy.
+  # No abre ningún puerto de entrada: es `cloudflared` quien se conecta HACIA
+  # Cloudflare (conexión saliente) y por ese canal le llegan las peticiones, así
+  # que funciona detrás de CGNAT / IP dinámica / sin tocar el router. El TLS lo
+  # termina Cloudflare en su borde; aquí llega HTTP plano a `app:8080` por la red
+  # interna de compose (el hostname público se define en el panel de Cloudflare).
+  #
+  # Está en el perfil "tunnel": `docker compose up -d` NO lo levanta. En staging:
+  #
+  #   docker compose up -d db app cloudflared
+  #
+  # (nombrando los servicios: así tampoco se levanta Caddy, que solo vale en el
+  # droplet, donde sí hay IP pública).
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.1   # fija: una etiqueta flotante cambia sola
+    container_name: taxiapp-cloudflared
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # El token identifica este túnel ante Cloudflare. Es un SECRETO: quien lo
+      # tenga puede levantar un túnel con tu hostname. Va solo en el .env de la
+      # VM (nunca en el repositorio).
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
+    mem_limit: 128m
+    logging: *log-rotation
+
   # Panel web para ver y consultar las tablas. Es una HERRAMIENTA, no parte del
   # servicio: está en el perfil "tools", así que `docker compose up -d` NO lo
   # levanta (gasta ~250 MB que el droplet no tiene de sobra). Se pide por nombre:
