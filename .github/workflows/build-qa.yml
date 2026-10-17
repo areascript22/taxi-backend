@@ -1,0 +1,95 @@
+name: Build QA image
+
+# Al hacer merge de dev a qa: probar, construir la imagen y publicarla en GHCR.
+# NO despliega nada. El staging (la VM de la laptop) no es alcanzable desde
+# internet, así que quien despliega es quien enciende la VM: ver ops/STAGING.md.
+#
+# La imagen queda con dos etiquetas:
+#   ghcr.io/<repo>:<sha>   inmutable: úsala para desplegar (permite volver atrás)
+#   ghcr.io/<repo>:qa      móvil: apunta a la última construida
+
+on:
+  push:
+    branches: [qa]
+  workflow_dispatch:
+
+# Una construcción a la vez; una en curso no se cancela a medias.
+concurrency:
+  group: build-qa
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # Testcontainers usa el Docker del runner.
+      - name: Tests
+        run: mvn -B test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Referencia de la imagen
+        id: ref
+        run: |
+          # GHCR exige minúsculas.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest=ghcr.io/${GITHUB_REPOSITORY,,}:qa" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # El Dockerfile ya compila el jar (multi-stage): no se hace un `mvn package`
+      # aparte para no compilar dos veces.
+      - name: Construir y publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.ref.outputs.image }}
+            ${{ steps.ref.outputs.latest }}
+          # Vincula el paquete con este repo: permite que el GITHUB_TOKEN lo lea.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Deja a la vista el comando exacto para desplegar ESTA imagen en la VM.
+      - name: Resumen
+        run: |
+          {
+            echo "### Imagen publicada"
+            echo
+            echo '```'
+            echo "${{ steps.ref.outputs.image }}"
+            echo '```'
+            echo
+            echo "Para desplegarla en la VM de staging (ver ops/STAGING.md):"
+            echo '```'
+            echo "cd ~/taxiapp && ./ops/deploy.sh ${{ steps.ref.outputs.image }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

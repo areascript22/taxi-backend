@@ -12,6 +12,9 @@
 #   5. Espera a que el servidor responda. Si no responde, vuelve a la imagen
 #      anterior y termina con error para que el despliegue figure como fallido.
 #
+# Despliega SIEMPRE por sha (…:<sha>), no por la etiqueta móvil `:qa`: con `:qa`
+# la imagen "anterior" y la nueva tienen el mismo nombre y no habría a qué volver.
+#
 # La imagen desplegada queda escrita en `.env` (TAXIAPP_IMAGE): así un
 # `docker compose up -d` manual posterior no la revierte.
 #
@@ -71,6 +74,13 @@ wait_healthy() {
 
 [[ -f "$ENV_FILE" ]] || { echo "falta $ENV_FILE en $(pwd) (ver .env.example)" >&2; exit 4; }
 
+# Quién hace de proxy delante de la app. En el droplet es Caddy (por defecto). En
+# staging lo hace Cloudflare Tunnel (contenedor aparte, que este script no toca):
+# se declara con DEPLOY_PROXY=tunnel en el .env de la VM, y así no se levanta un
+# Caddy que no tiene nada que hacer allí.
+PROXY="$(grep -E '^DEPLOY_PROXY=' "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+PROXY="${PROXY:-caddy}"
+
 PREVIOUS="$(current_image)"
 
 # 1. Credenciales de GHCR (el token vive solo lo que dura el job de CI).
@@ -104,10 +114,14 @@ docker compose up -d --no-deps app
 # 5. Verificación y rollback.
 if wait_healthy; then
   log "OK: $IMAGE responde"
-  # Proxy: se levanta si no existe y recarga el Caddyfile por si cambió (el
-  # bind mount no dispara una recreación del contenedor).
-  docker compose up -d --no-deps caddy
-  docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile || true
+  if [[ "$PROXY" == "caddy" ]]; then
+    # Proxy: se levanta si no existe y recarga el Caddyfile por si cambió (el
+    # bind mount no dispara una recreación del contenedor).
+    docker compose up -d --no-deps caddy
+    docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile || true
+  else
+    log "proxy '$PROXY': no se toca Caddy"
+  fi
   docker image prune -af --filter "until=168h" > /dev/null || true
   exit 0
 fi
