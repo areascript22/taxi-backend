@@ -1,0 +1,14 @@
+# Proxy inverso con TLS automático (Let's Encrypt). Lo monta el servicio `caddy`
+# de compose.yaml. `app` es el nombre del servicio en la red interna de compose.
+#
+# api.taxiriobamba.com es el dominio definitivo de producción.
+# taxigo.juniorz.dev es el dominio prestado de la etapa QA: se sirve en paralelo
+# mientras alguna app o prueba siga apuntando ahí, y se borra de esta lista
+# cuando ya nada lo use.
+#
+# Un solo bloque con ambos nombres: Caddy pide un certificado por cada uno y, si
+# uno falla (por ejemplo, el DNS de api.* aún no propagó), reintenta solo ese sin
+# afectar al otro.
+api.taxiriobamba.com, taxigo.juniorz.dev {
+	reverse_proxy app:8080
+}

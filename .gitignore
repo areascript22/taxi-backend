@@ -36,7 +36,13 @@ build/
 **/secrets/
 firebase-service-account*.json
 *serviceAccountKey*.json
+*firebase-adminsdk*.json
 .env
 .env.*
 application-secrets.properties
 application-local.properties
+!.env.example
+
+### Artefactos locales ###
+*.log
+taxiapp.tar

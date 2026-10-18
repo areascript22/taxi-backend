@@ -1,0 +1,170 @@
+# TaxiGo backend: Postgres + PostGIS y el servidor Spring Boot, cada uno en su
+# contenedor, en el mismo droplet (2 GB de RAM).
+#
+#   Servidor:    docker compose up -d
+#   Desarrollo:  docker compose -f compose.yaml -f compose.dev.yaml up -d db
+#   Panel web:   docker compose up -d db pgadmin     (ver el servicio pgadmin)
+#
+# Las variables salen de .env (ver .env.example). Presupuesto de memoria:
+#   db  ~640 MB  +  app ~900 MB  +  sistema/Docker/Caddy ~400 MB  =  ~1,9 GB
+# Los límites (mem_limit) hacen que, si uno se desborda, lo mate Docker a ÉL y
+# no al otro. Hay 1-2 GB de swap en el droplet como red de seguridad.
+
+name: taxiapp
+
+services:
+  db:
+    image: postgis/postgis:16-3.4   # fija: un salto de versión mayor exige dump/restore
+    container_name: taxiapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: taxiapp
+      POSTGRES_USER: taxiapp
+      # Sin valor por defecto: la imagen se niega a arrancar con la contraseña
+      # vacía, que es lo que queremos que pase si se olvida definirla.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Ajustes para ~640 MB y un servidor que usa un pool de 8 conexiones.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=30
+      -c wal_compression=on
+      -c log_min_duration_statement=500
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 128mb
+    mem_limit: 640m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taxiapp -d taxiapp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging: &log-rotation
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # SIN `ports:`. Docker publica por encima del firewall (ufw): el único que
+    # habla con la base es el servidor, por la red interna de compose. En
+    # desarrollo, compose.dev.yaml la expone solo en 127.0.0.1.
+
+  app:
+    image: ${TAXIAPP_IMAGE:-taxiapp:local}
+    build: .
+    container_name: taxiapp
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/taxiapp
+      SPRING_DATASOURCE_USERNAME: taxiapp
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      FIREBASE_CREDENTIALS_PATH: file:/run/secrets/firebase-adminsdk.json
+      TAXIAPP_ADMIN_FOUNDER_UID: ${TAXIAPP_ADMIN_FOUNDER_UID:-}
+      TAXIAPP_ADMIN_FOUNDER_EMAIL: ${TAXIAPP_ADMIN_FOUNDER_EMAIL:-}
+      # El tope es relativo al límite del contenedor (900 MB), no al del droplet.
+      # SerialGC: con 1 vCPU, los recolectores paralelos cuestan más de lo que ahorran.
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60 -XX:+UseSerialGC
+    volumes:
+      - ${FIREBASE_CREDENTIALS_FILE:-./secrets/taxigo-dev-firebase-adminsdk.json}:/run/secrets/firebase-adminsdk.json:ro
+    # Solo loopback: nadie llega al 8080 desde internet, únicamente Caddy desde
+    # la propia máquina (que hace el TLS).
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 900m
+    logging: *log-rotation
+
+  # Proxy con TLS automático. Es el único servicio que publica 80/443.
+  # Sin `depends_on: app`: durante un despliegue el proxy sigue en pie (responde
+  # 502 unos segundos) en vez de caerse con la app y pedir otra vez todo.
+  # Los volúmenes conservan los certificados: no se borran con `down -v`.
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    logging: *log-rotation
+
+  # Túnel de Cloudflare: lo usa STAGING (la VM de la laptop) en lugar de Caddy.
+  # No abre ningún puerto de entrada: es `cloudflared` quien se conecta HACIA
+  # Cloudflare (conexión saliente) y por ese canal le llegan las peticiones, así
+  # que funciona detrás de CGNAT / IP dinámica / sin tocar el router. El TLS lo
+  # termina Cloudflare en su borde; aquí llega HTTP plano a `app:8080` por la red
+  # interna de compose (el hostname público se define en el panel de Cloudflare).
+  #
+  # Está en el perfil "tunnel": `docker compose up -d` NO lo levanta. En staging:
+  #
+  #   docker compose up -d db app cloudflared
+  #
+  # (nombrando los servicios: así tampoco se levanta Caddy, que solo vale en el
+  # droplet, donde sí hay IP pública).
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.1   # fija: una etiqueta flotante cambia sola
+    container_name: taxiapp-cloudflared
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # El token identifica este túnel ante Cloudflare. Es un SECRETO: quien lo
+      # tenga puede levantar un túnel con tu hostname. Va solo en el .env de la
+      # VM (nunca en el repositorio).
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
+    mem_limit: 128m
+    logging: *log-rotation
+
+  # Panel web para ver y consultar las tablas. Es una HERRAMIENTA, no parte del
+  # servicio: está en el perfil "tools", así que `docker compose up -d` NO lo
+  # levanta (gasta ~250 MB que el droplet no tiene de sobra). Se pide por nombre:
+  #
+  #   docker compose up -d db pgadmin
+  #
+  # SEGURIDAD: solo escucha en 127.0.0.1 (nunca en internet; Docker se salta ufw).
+  # En el servidor se entra por un túnel SSH, ver ops/README.md sección 6.
+  pgadmin:
+    image: dpage/pgadmin4:8.14
+    container_name: taxiapp-pgadmin
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # El correo y la contraseña con los que se inicia sesión en el panel. Sin
+      # valor por defecto: si faltan, pgAdmin no arranca.
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      # Sin pantalla de "actualizaciones disponibles" ni peticiones a internet.
+      PGADMIN_CONFIG_CHECK_UPDATES: "False"
+      # Sin la política de contraseña maestra: ya hay login en el panel.
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      # Registra la base como servidor la primera vez (solo con el volumen
+      # vacío). La contraseña de la base NO va aquí: se escribe una vez en el panel.
+      - ./ops/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    ports:
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
+    mem_limit: 400m
+    logging: *log-rotation
+
+volumes:
+  pgdata:
+  pgadmin-data:
+  caddy_data:
+  caddy_config:
