@@ -4,7 +4,7 @@
 dev ──merge──▶ qa ──▶ GitHub Actions (build-qa.yml): tests → build → push a GHCR
                                   │
                                   ▼  imagen  ghcr.io/areascript22/taxi-backend:<sha>
-                          VM de staging (a mano): ./ops/deploy.sh <imagen>
+                          VM de staging (a mano): sudo ./ops/deploy.sh <imagen>
                                   │
    testers ──HTTPS──▶ Cloudflare ══túnel══▶ cloudflared ──HTTP──▶ app:8080
             staging.taxiriobamba.com
@@ -23,15 +23,18 @@ La VM, el hardening y Docker ya están hechos. Lo que falta para poder desplegar
 imágenes de GHCR:
 
 ```bash
-# Carpeta de backups que usa ops/backup-db.sh
-sudo install -d -o "$USER" -g "$USER" -m 700 /var/backups/taxiapp
+# 0. Copia compose.yaml y ops/ desde tu PC (PowerShell, en server\taxiapp). Sin esto
+#    la VM tiene un deploy.sh viejo que no entiende DEPLOY_PROXY y levanta Caddy:
+#      scp -r compose.yaml ops staging:taxiapp/
+#    y luego, ya en la VM:  chmod +x ~/taxiapp/ops/*.sh
 
 # Marca que el proxy NO es Caddy (para que deploy.sh no lo levante)
 echo "DEPLOY_PROXY=tunnel" >> ~/taxiapp/.env
 
 # Credencial para bajar imágenes de GHCR: un PAT clásico con SOLO read:packages.
-# docker login lo pide por teclado y lo guarda en ~/.docker/config.json.
-docker login ghcr.io -u <tu-usuario-github>
+# docker login lo pide por teclado. Con sudo: deploy.sh corre como root (tu usuario
+# no está en el grupo docker a propósito) y la credencial queda en /root/.docker.
+sudo docker login ghcr.io -u <tu-usuario-github>
 ```
 
 `.env` de la VM (ver `.env.example`): `SPRING_PROFILES_ACTIVE=staging`,
@@ -47,7 +50,7 @@ docker login ghcr.io -u <tu-usuario-github>
    `scp -r compose.yaml ops staging:taxiapp/`
 4. Despliega **por sha** (no por `:qa`, para poder volver atrás):
    ```bash
-   cd ~/taxiapp && ./ops/deploy.sh ghcr.io/areascript22/taxi-backend:<sha>
+   cd ~/taxiapp && sudo ./ops/deploy.sh ghcr.io/areascript22/taxi-backend:<sha>
    ```
    Hace backup, baja la imagen, reemplaza solo `app`, espera a que responda y, si
    no responde, vuelve a la imagen anterior.
