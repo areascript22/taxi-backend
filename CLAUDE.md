@@ -149,9 +149,8 @@ ruta por defecto de la credencial de Firebase es relativa.
 
 ## 5. Qué no se commitea
 
-- `secrets/` y `target/`: ya están en `.gitignore`.
-- `*.log` y `taxiapp.tar` (187 MB): **todavía no** están en `.gitignore`; no los
-  agregues.
+- `secrets/`, `target/`, `*.log` y `taxiapp.tar` (187 MB): ya están en
+  `.gitignore`.
 - `deploy/` (runbook del droplet): hoy está sin versionar. Revisa que no lleve
   secretos antes de decidir agregarlo.
 
