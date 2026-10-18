@@ -19,7 +19,15 @@ BACKUP_DIR="${BACKUP_DIR:-/var/backups/taxiapp}"
 KEEP="${KEEP:-7}"
 
 mkdir -p "$BACKUP_DIR"
-chmod 700 "$BACKUP_DIR"
+# Si existe el usuario `taxibackup` (sin sudo ni docker, solo para copiar los dumps a
+# otra máquina con pull-backups.ps1) la carpeta es 750 con su grupo: puede LEER y
+# nadie más entra. Si el grupo no existe, o este usuario no pertenece a él, se
+# queda en 700: un permiso de más nunca debe romper el backup.
+if getent group taxibackup > /dev/null && chgrp taxibackup "$BACKUP_DIR" 2> /dev/null; then
+  chmod 750 "$BACKUP_DIR"
+else
+  chmod 700 "$BACKUP_DIR"
+fi
 
 stamp="$(date +%Y%m%d-%H%M%S)"
 final="$BACKUP_DIR/taxiapp-$stamp.dump"
