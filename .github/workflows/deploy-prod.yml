@@ -1,0 +1,164 @@
+name: Deploy PROD (DigitalOcean)
+
+# Al hacer merge de qa a main: desplegar en el droplet la MISMA imagen que se
+# construyó y probó en qa. NO construye nada: si el artefacto de producción
+# fuera otro build, no sería lo que se probó.
+#
+# Qué imagen se despliega (la etiqueta es el sha del último commit de qa):
+#   - merge commit (el botón normal de GitHub): el segundo padre, que es el
+#     último commit de qa que entró. Es el caso habitual.
+#   - fast-forward: main apunta al mismo commit que qa, así que es HEAD.
+#   - squash o cualquier otra cosa: no hay imagen con ese sha y el workflow FALLA
+#     sin tocar el servidor (ver "Comprobar que la imagen existe").
+#
+# Volver atrás o redesplegar a mano: Actions > Deploy PROD > Run workflow, con el
+# sha completo de una imagen ya publicada en `image_sha`.
+#
+# El rollback automático lo hace ops/deploy.sh en el droplet: si la imagen nueva
+# no responde, vuelve a la anterior y este workflow termina en rojo.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: "Sha completo (40 caracteres) de una imagen ya publicada. Vacío = la de HEAD"
+        required: false
+        default: ""
+
+# Nunca dos despliegues a la vez, y uno en curso no se cancela a medias.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+      sha: ${{ steps.ref.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Dos commits de historia bastan para ver los padres de un merge.
+          fetch-depth: 2
+
+      - name: Decidir qué imagen se despliega
+        id: ref
+        env:
+          INPUT_SHA: ${{ inputs.image_sha }}
+        run: |
+          if [ -n "$INPUT_SHA" ]; then
+            SHA="$INPUT_SHA"
+            echo "Sha indicado a mano: $SHA"
+          else
+            # `rev-list --parents` imprime el commit y sus padres: 3 palabras = merge commit.
+            WORDS=$(git rev-list --parents -n 1 HEAD | wc -w)
+            if [ "$WORDS" -eq 3 ]; then
+              SHA=$(git rev-parse HEAD^2)
+              echo "Merge commit: se despliega el último commit de qa que entró ($SHA)"
+            else
+              SHA=$(git rev-parse HEAD)
+              echo "Sin segundo padre (fast-forward o squash): se intenta con HEAD ($SHA)"
+            fi
+          fi
+
+          # El sha acaba dentro de un comando que corre en el droplet por SSH: solo
+          # se acepta un sha completo.
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha inválido: $SHA"
+            exit 1
+          fi
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          # GHCR exige minúsculas.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Comprobar que la imagen existe
+        env:
+          IMAGE: ${{ steps.ref.outputs.image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if ! docker manifest inspect "$IMAGE" > /dev/null; then
+            echo "::error::No existe la imagen $IMAGE. Solo se despliega lo que construyó build-qa.yml al fusionar a qa (¿se usó 'Squash and merge'? en main solo debe usarse 'Create a merge commit')."
+            exit 1
+          fi
+          echo "Imagen encontrada: $IMAGE"
+
+  deploy:
+    needs: resolve
+    runs-on: ubuntu-latest
+    # Entorno SIN revisores obligatorios: el merge a main ya es la aprobación.
+    # Sirve para guardar aquí los secretos de producción y ver el historial de
+    # despliegues en GitHub.
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SSH_HOST: ${{ secrets.DROPLET_HOST }}
+      SSH_USER: ${{ secrets.DROPLET_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar SSH
+        env:
+          SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DROPLET_HOST_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Huella fijada: si el host cambia, el despliegue falla en vez de
+          # confiar a ciegas en quien responda en esa IP.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host *\n  StrictHostKeyChecking yes\n  ServerAliveInterval 15\n' > ~/.ssh/config
+
+      - name: Subir compose.yaml y ops/
+        run: |
+          scp -r compose.yaml ops "$SSH_USER@$SSH_HOST:/opt/taxiapp/"
+
+      - name: Desplegar
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        run: |
+          echo "Desplegando $IMAGE"
+          # El token viaja por stdin (no queda en argumentos ni en el historial).
+          printf '%s\n' "$GHCR_TOKEN" | ssh "$SSH_USER@$SSH_HOST" \
+            "chmod +x /opt/taxiapp/ops/*.sh && /opt/taxiapp/ops/deploy.sh '$IMAGE' '$GHCR_USER'"
+
+      # deploy.sh verifica el servidor por dentro (127.0.0.1). Esto comprueba lo que
+      # ve un cliente de verdad: DNS, certificado y Caddy.
+      - name: Verificar desde fuera
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+              "https://api.taxiriobamba.com/api/public/app-version?app=driver&version=0.0.0" || true)
+            echo "intento $i: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 10
+          done
+          echo "::error::api.taxiriobamba.com no respondió 200 tras el despliegue"
+          exit 1
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Producción desplegada"
+            echo
+            echo '```'
+            echo "${{ needs.resolve.outputs.image }}"
+            echo '```'
+            echo
+            echo "Para volver atrás: Actions > Deploy PROD > Run workflow, con el sha de una versión anterior."
+          } >> "$GITHUB_STEP_SUMMARY"
