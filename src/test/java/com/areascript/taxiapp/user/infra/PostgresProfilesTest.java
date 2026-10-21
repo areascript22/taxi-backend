@@ -121,6 +121,57 @@ class PostgresProfilesTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM vehicles", Integer.class)).isEqualTo(1);
     }
 
+    // ---- Fundador: se autoaprueba (DriverApprovalRules), el resto no ----
+
+    @Test
+    void el_alta_con_autoaprobacion_nace_aprobada_y_aprobada_por_la_propia_persona() {
+        UserAccount fundador = person("f1");
+
+        profiles.saveDriverProfile(fundador.id(), "f1@test.com", driverData("PBX-1234", "Amarillo"), true);
+
+        Driver driver = driverRepository.findById("f1").orElseThrow();
+        assertThat(driver.approvalStatus()).isEqualTo(ApprovalStatus.APPROVED);
+        assertThat(driver.vehicle()).as("llena su vehículo como cualquier conductor").isNotNull();
+        assertThat(jdbc.queryForObject("SELECT approved_by FROM drivers WHERE user_id = ?",
+                java.util.UUID.class, fundador.id())).isEqualTo(fundador.id());
+        assertThat(jdbc.queryForObject("SELECT approved_at FROM drivers WHERE user_id = ?",
+                java.sql.Timestamp.class, fundador.id())).isNotNull();
+    }
+
+    @Test
+    void editar_con_autoaprobacion_aprueba_a_un_pendiente() {
+        UserAccount fundador = person("f1");
+        profiles.saveDriverProfile(fundador.id(), "f1@test.com", driverData("PBX-1234", "Amarillo"));
+        assertThat(driverRepository.findById("f1").orElseThrow().approvalStatus()).isEqualTo(ApprovalStatus.PENDING);
+
+        profiles.saveDriverProfile(fundador.id(), "f1@test.com", driverData("PBX-1234", "Rojo"), true);
+
+        assertThat(driverRepository.findById("f1").orElseThrow().approvalStatus()).isEqualTo(ApprovalStatus.APPROVED);
+    }
+
+    @Test
+    void la_autoaprobacion_deja_sin_efecto_un_rechazo_anterior() {
+        UserAccount fundador = person("f1");
+        profiles.saveDriverProfile(fundador.id(), "f1@test.com", driverData("PBX-1234", "Amarillo"));
+        driverRepository.applyApproval("f1", ApprovalStatus.REJECTED, "documentos", "admin-1");
+
+        profiles.saveDriverProfile(fundador.id(), "f1@test.com", driverData("PBX-1234", "Amarillo"), true);
+
+        Driver driver = driverRepository.findById("f1").orElseThrow();
+        assertThat(driver.approvalStatus()).isEqualTo(ApprovalStatus.APPROVED);
+        assertThat(driver.rejectionReason()).isNull();
+    }
+
+    @Test
+    void sin_autoaprobacion_un_conductor_no_se_aprueba_aunque_edite() {
+        UserAccount ana = person("d1");
+        profiles.saveDriverProfile(ana.id(), "d1@test.com", driverData("PBX-1234", "Amarillo"));
+
+        profiles.saveDriverProfile(ana.id(), "d1@test.com", driverData("PBX-1234", "Rojo"), false);
+
+        assertThat(driverRepository.findById("d1").orElseThrow().approvalStatus()).isEqualTo(ApprovalStatus.PENDING);
+    }
+
     @Test
     void cambiar_la_placa_vuelve_la_verificacion_del_vehiculo_a_pendiente() {
         UserAccount ana = person("d1");
