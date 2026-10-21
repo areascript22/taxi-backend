@@ -210,6 +210,17 @@ public class RideLifecycleService {
 
         // Primero se autoriza al conductor, antes de tocar la carrera.
         DriverContact contact = authorizedContact(driverUid, driverEmail, driverDisplayName, driverPhotoUrl);
+
+        // Reintento de una aceptación que YA ganó este mismo conductor (el cliente
+        // cortó la espera por timeout y reenvió, aunque el servidor sí terminó):
+        // se responde éxito sin repetir push ni eventos. Va antes de
+        // requireOffered porque la bandeja de ofertas puede haberse limpiado ya.
+        if (isAlreadyAssignedTo(passengerId, driverUid)) {
+            log.info("RideDebug | Reintento idempotente: passengerId={} ya estaba asignada a driverUid={}",
+                    passengerId, driverUid);
+            return;
+        }
+
         if (dispatchProperties.enforceOffers()) {
             requireOffered(passengerId, driverUid);
         }
@@ -245,6 +256,15 @@ public class RideLifecycleService {
         // Quien reacciona a que la carrera fue aceptada (hoy, el chat abre su
         // hilo) se entera por el evento; los listeners no pueden revertirla.
         events.publishEvent(new RideAccepted(ride.rideId(), passengerId, driverUid));
+    }
+
+    private boolean isAlreadyAssignedTo(String passengerId, String driverUid) {
+        return rides.find(passengerId)
+                .filter(ride -> driverUid.equals(ride.driverId()))
+                .map(ride -> ride.status() == RideStatus.DRIVER_ASSIGNED
+                        || ride.status() == RideStatus.DRIVER_ARRIVED
+                        || ride.status() == RideStatus.TRIP_STARTED)
+                .orElse(false);
     }
 
     // Con el despacho por cercanía, solo puede aceptar quien recibió la oferta:
