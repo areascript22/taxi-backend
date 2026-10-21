@@ -32,10 +32,24 @@ class FounderBootstrapServiceTest {
 
     private RuntimeException ensureRoleFailure;
 
+    // La fila de conductor del fundador, si ya registró su perfil. Vacía = nunca
+    // lo hizo (en la base real, quien no tiene perfil no aparece como conductor).
+    private Optional<Driver> founderDriver = Optional.empty();
+    private RuntimeException findByIdFailure;
+    private RuntimeException applyApprovalFailure;
+
+    private static Driver driverWith(String uid, ApprovalStatus status) {
+        return new Driver(uid, "Fundador", "Dueño", "f@test.com", "0991112222", null, null, 5.0,
+                DriverRole.SUPERUSER, status, false, null, null, null, null, null, null, null);
+    }
+
     private final DriverRepository drivers = new DriverRepository() {
         @Override
         public Optional<Driver> findById(String uid) {
-            throw new UnsupportedOperationException();
+            if (findByIdFailure != null) {
+                throw findByIdFailure;
+            }
+            return founderDriver;
         }
 
         @Override
@@ -63,7 +77,10 @@ class FounderBootstrapServiceTest {
 
         @Override
         public void applyApproval(String uid, ApprovalStatus status, String reason, String actorUid) {
-            throw new UnsupportedOperationException();
+            if (applyApprovalFailure != null) {
+                throw applyApprovalFailure;
+            }
+            calls.add("applyApproval " + uid + " " + status.wireValue() + " por " + actorUid);
         }
 
         @Override
@@ -146,5 +163,72 @@ class FounderBootstrapServiceTest {
         userRoleFailure = new ExternalServiceException("postgres caído", new RuntimeException());
 
         assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
+    }
+
+    // ---- El fundador no espera una aprobación que nadie puede darle ----
+
+    @Test
+    void aprueba_el_perfil_de_conductor_del_fundador_si_estaba_pendiente() {
+        founderDriver = Optional.of(driverWith("f1", ApprovalStatus.PENDING));
+
+        service("f1").ensureFounderIsSuperUser();
+
+        // Él mismo es el actor: no hay nadie por encima que lo apruebe.
+        assertThat(calls).containsExactly("ensureRole f1 superuser", "applyApproval f1 approved por f1");
+    }
+
+    @Test
+    void tambien_lo_aprueba_si_estaba_rechazado() {
+        founderDriver = Optional.of(driverWith("f1", ApprovalStatus.REJECTED));
+
+        service("f1").ensureFounderIsSuperUser();
+
+        assertThat(calls).contains("applyApproval f1 approved por f1");
+    }
+
+    // Idempotente: en cada arranque no reescribe una aprobación que ya está.
+    @Test
+    void no_vuelve_a_aprobar_si_ya_estaba_aprobado() {
+        founderDriver = Optional.of(driverWith("f1", ApprovalStatus.APPROVED));
+
+        service("f1").ensureFounderIsSuperUser();
+
+        assertThat(calls).containsExactly("ensureRole f1 superuser");
+    }
+
+    // En una base nueva el fundador todavía no registró su perfil: nacerá
+    // aprobado al guardarlo (DriverApprovalRules), aquí no hay nada que hacer.
+    @Test
+    void sin_perfil_de_conductor_no_hay_nada_que_aprobar() {
+        service("f1").ensureFounderIsSuperUser();
+
+        assertThat(calls).containsExactly("ensureRole f1 superuser");
+    }
+
+    // Nunca impide el arranque, y el rol ya quedó guardado.
+    @Test
+    void un_fallo_al_aprobar_no_se_propaga() {
+        founderDriver = Optional.of(driverWith("f1", ApprovalStatus.PENDING));
+        applyApprovalFailure = new ExternalServiceException("postgres caído", new RuntimeException());
+
+        assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
+        assertThat(userRoleCalls).containsExactly("f1 superuser");
+    }
+
+    @Test
+    void un_fallo_al_leer_al_conductor_no_se_propaga() {
+        findByIdFailure = new ExternalServiceException("postgres caído", new RuntimeException());
+
+        assertThatCode(() -> service("f1").ensureFounderIsSuperUser()).doesNotThrowAnyException();
+        assertThat(userRoleCalls).containsExactly("f1 superuser");
+    }
+
+    @Test
+    void sin_fundador_configurado_tampoco_aprueba_a_nadie() {
+        founderDriver = Optional.of(driverWith("f1", ApprovalStatus.PENDING));
+
+        service("").ensureFounderIsSuperUser();
+
+        assertThat(calls).isEmpty();
     }
 }
