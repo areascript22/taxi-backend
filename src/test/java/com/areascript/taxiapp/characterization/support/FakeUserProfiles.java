@@ -1,5 +1,7 @@
 package com.areascript.taxiapp.characterization.support;
 
+import com.areascript.taxiapp.driveradmin.domain.ApprovalStatus;
+import com.areascript.taxiapp.driveradmin.domain.DriverApprovalRules;
 import com.areascript.taxiapp.user.domain.AppProfile;
 import com.areascript.taxiapp.user.domain.DriverProfile;
 import com.areascript.taxiapp.user.domain.DriverProfileData;
@@ -53,12 +55,14 @@ public class FakeUserProfiles implements UserProfiles {
         return hasProfile;
     }
 
-    // Igual que la base: al CREAR el perfil nace "pending"; al editar se
-    // conserva la aprobación que ya tenía.
+    // Igual que la base: la aprobación la decide DriverApprovalRules (al crear
+    // nace "pending", al editar se conserva; el fundador queda "approved").
     @Override
-    public void saveDriverProfile(UUID userId, String email, DriverProfileData data) {
+    public void saveDriverProfile(UUID userId, String email, DriverProfileData data, boolean autoApprove) {
         savedDriverProfiles.add(new SavedDriverProfile(userId, email, data));
         DriverProfile existing = drivers.get(userId);
+        ApprovalStatus current = existing == null ? null : ApprovalStatus.fromStored(existing.approvalStatus());
+        ApprovalStatus next = DriverApprovalRules.afterProfileSave(current, autoApprove);
         VehicleData v = data.vehicle();
         VehicleSummary vehicle = new VehicleSummary(
                 existing != null && existing.vehicle() != null ? existing.vehicle().vehicleId() : "v-" + userId,
@@ -68,8 +72,8 @@ public class FakeUserProfiles implements UserProfiles {
                 data.phoneNumber(),
                 data.photoUrl(),
                 existing == null ? 5.0 : existing.rating(),
-                existing == null ? "pending" : existing.approvalStatus(),
-                existing == null ? null : existing.rejectionReason(),
+                next.wireValue(),
+                next == ApprovalStatus.APPROVED ? null : existing == null ? null : existing.rejectionReason(),
                 existing == null ? null : existing.language(),
                 vehicle,
                 existing != null && existing.online(),

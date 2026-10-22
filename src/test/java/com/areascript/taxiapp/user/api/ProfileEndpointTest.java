@@ -83,6 +83,61 @@ class ProfileEndpointTest extends CharacterizationTestBase {
                 .andExpect(jsonPath("$.driver.rating").value(4.8));
     }
 
+    // ---- Fundador: no espera la aprobación (nadie puede dársela), pero llena todo ----
+
+    private String founderToken() throws Exception {
+        return token(FOUNDER_UID, FOUNDER_EMAIL, "Fundador", null, java.util.Map.of());
+    }
+
+    @Test
+    void el_fundador_crea_su_perfil_de_conductor_ya_aprobado_con_su_vehiculo() throws Exception {
+        mvc.perform(put("/api/me/driver-profile").header("Authorization", founderToken())
+                        .contentType(JSON).content(driverBody(null, "PBX-1234", 2020)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.driver.approvalStatus").value("approved"))
+                .andExpect(jsonPath("$.driver.vehicle.plate").value("PBX-1234"));
+
+        assertThat(userProfiles.savedDriverProfiles()).hasSize(1);
+    }
+
+    // Se salta la espera, no el formulario: sin vehículo es un 400 como para
+    // cualquier otro conductor y no se guarda nada.
+    @Test
+    void el_fundador_tambien_tiene_que_llenar_el_vehiculo() throws Exception {
+        String sinVehiculo = "{\"firstName\":\"Ana\",\"lastName\":\"Pérez\",\"phoneNumber\":\"0991112222\"}";
+
+        mvc.perform(put("/api/me/driver-profile").header("Authorization", founderToken())
+                        .contentType(JSON).content(sinVehiculo))
+                .andExpect(status().isBadRequest());
+
+        assertThat(userProfiles.savedDriverProfiles()).isEmpty();
+    }
+
+    // Ya había registrado su perfil antes de esta regla (o en otra base): al
+    // volver a guardarlo queda aprobado.
+    @Test
+    void el_fundador_con_el_perfil_pendiente_queda_aprobado_al_guardarlo() throws Exception {
+        userProfiles.putDriver(idOf(FOUNDER_UID),
+                new DriverProfile("0990000000", null, 5.0, "pending", null, null, null, false, false));
+
+        mvc.perform(put("/api/me/driver-profile").header("Authorization", founderToken())
+                        .contentType(JSON).content(driverBody(null, "PBX-1234", 2020)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.driver.approvalStatus").value("approved"));
+    }
+
+    // Quién es el fundador lo decide el uid del token verificado, no el correo:
+    // alguien con SU correo pero otro uid no se salta la aprobación.
+    @Test
+    void quien_solo_comparte_el_correo_del_fundador_sigue_pendiente() throws Exception {
+        String impostor = token("otro-uid", FOUNDER_EMAIL, "Impostor", null, java.util.Map.of());
+
+        mvc.perform(put("/api/me/driver-profile").header("Authorization", impostor)
+                        .contentType(JSON).content(driverBody(null, "PBX-1234", 2020)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.driver.approvalStatus").value("pending"));
+    }
+
     @Test
     void acepta_la_foto_que_es_suya() throws Exception {
         mvc.perform(put("/api/me/driver-profile").header("Authorization", userToken("d1"))

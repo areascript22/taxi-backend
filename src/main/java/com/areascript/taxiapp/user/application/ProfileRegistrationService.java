@@ -1,5 +1,6 @@
 package com.areascript.taxiapp.user.application;
 
+import com.areascript.taxiapp.common.config.TaxiappProperties;
 import com.areascript.taxiapp.common.error.InvalidInputException;
 import com.areascript.taxiapp.common.firebase.FirebaseProperties;
 import com.areascript.taxiapp.user.domain.DriverProfileData;
@@ -49,16 +50,19 @@ public class ProfileRegistrationService {
     private final UserAccounts accounts;
     private final UserProfiles profiles;
     private final FirebaseProperties firebase;
+    private final TaxiappProperties.Admin adminSettings;
     private final Clock clock;
 
     public ProfileRegistrationService(
             UserAccounts accounts,
             UserProfiles profiles,
             FirebaseProperties firebase,
+            TaxiappProperties taxiapp,
             Clock clock) {
         this.accounts = accounts;
         this.profiles = profiles;
         this.firebase = firebase;
+        this.adminSettings = taxiapp.admin();
         this.clock = clock;
     }
 
@@ -70,7 +74,11 @@ public class ProfileRegistrationService {
         DriverProfileData clean = validate(firebaseUid, data);
 
         UserAccount account = accounts.findOrProvision(firebaseUid, email, displayName);
-        profiles.saveDriverProfile(account.id(), email, clean);
+        // El fundador llena sus datos y su vehículo como cualquier conductor; lo
+        // único que se salta es la espera de aprobación (nadie puede aprobarlo).
+        // Lo decide la configuración del servidor con el uid del token verificado,
+        // nunca algo que mande el cliente.
+        profiles.saveDriverProfile(account.id(), email, clean, adminSettings.isFounder(firebaseUid));
 
         return load(account);
     }

@@ -1,6 +1,8 @@
 package com.areascript.taxiapp.user.infra;
 
 import com.areascript.taxiapp.common.error.ExternalServiceException;
+import com.areascript.taxiapp.driveradmin.domain.ApprovalStatus;
+import com.areascript.taxiapp.driveradmin.domain.DriverApprovalRules;
 import com.areascript.taxiapp.user.domain.AppProfile;
 import com.areascript.taxiapp.user.domain.DriverProfile;
 import com.areascript.taxiapp.user.domain.DriverProfileData;
@@ -106,18 +108,31 @@ public class PostgresUserProfiles implements UserProfiles {
 
     @Override
     @Transactional
-    public void saveDriverProfile(UUID userId, String email, DriverProfileData data) {
+    public void saveDriverProfile(UUID userId, String email, DriverProfileData data, boolean autoApprove) {
         try {
             Instant now = Instant.now();
             applyIdentity(userId, email, data.firstName(), data.lastName(), now);
 
             DriverRow driver = drivers.findById(userId).orElse(null);
+            // null = alta. La regla decide el estado; este método solo la aplica.
+            ApprovalStatus current = driver == null ? null : ApprovalStatus.fromStored(driver.getApprovalStatus());
+            ApprovalStatus next = DriverApprovalRules.afterProfileSave(current, autoApprove);
             if (driver == null) {
-                // Alta: nace pendiente de aprobación (lo fija el servidor, no el
-                // cliente) y sin bloqueo ni calificación propia.
+                // Alta: sin bloqueo ni calificación propia. La aprobación la fija el
+                // servidor, no el cliente.
                 driver = new DriverRow(userId);
-                driver.setApprovalStatus("pending");
                 driver.setCreatedAt(now);
+            }
+            if (next != current) {
+                driver.setApprovalStatus(next.wireValue());
+                if (next == ApprovalStatus.APPROVED) {
+                    // Solo llega aquí el fundador (autoApprove): se aprueba a sí
+                    // mismo por configuración, y no por la API de moderación. Un
+                    // rechazo anterior deja de aplicar.
+                    driver.setApprovedAt(now);
+                    driver.setApprovedBy(userId);
+                    driver.setRejectionReason(null);
+                }
             }
             driver.setPhoneNumber(data.phoneNumber());
             driver.setPhotoUrl(data.photoUrl());

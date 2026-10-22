@@ -26,13 +26,25 @@ public interface UserProfiles {
     // no la decide. Al editar no se toca (aprobación, bloqueo, rol y
     // calificación son del servidor).
     //
+    // Excepción: `autoApprove` lo decide el servidor, nunca el cliente, y solo
+    // es true para el fundador (nadie está por encima de él para aprobarlo, y
+    // ModerationPolicy impide aprobar a un superusuario). Con autoApprove el
+    // perfil queda "approved" al crearlo y también al editarlo si estaba
+    // pendiente o rechazado, en la misma transacción. No salta nada más: el
+    // fundador llena sus datos y su vehículo como cualquier conductor.
+    //
     // El vehículo: si el conductor ya tiene uno se actualiza; si no, se crea y
     // queda como su vehículo actual. Cambiar la placa o la matrícula vuelve la
     // verificación del vehículo a "pending" (es otro auto, o al menos otro
     // documento); cambiar el color, por ejemplo, no.
     //
     // `email` solo se usa si la persona todavía no lo tiene guardado.
-    void saveDriverProfile(UUID userId, String email, DriverProfileData data);
+    void saveDriverProfile(UUID userId, String email, DriverProfileData data, boolean autoApprove);
+
+    // El caso normal: el conductor espera la aprobación de un administrador.
+    default void saveDriverProfile(UUID userId, String email, DriverProfileData data) {
+        saveDriverProfile(userId, email, data, false);
+    }
 
     // Alta o edición del perfil de pasajero. Al crearlo queda "active".
     void savePassengerProfile(UUID userId, String email, PassengerProfileData data);

@@ -188,6 +188,23 @@ class RideAcceptCharacterizationTest extends CharacterizationTestBase {
         assertThat(firestore.documentIds("chats")).isEmpty();
     }
 
+    // El cliente corta la espera por timeout y reenvía aunque el servidor ya
+    // asignó: el reintento del MISMO conductor no es un conflicto, es éxito.
+    @Test
+    void un_reintento_del_conductor_ya_asignado_responde_204_sin_repetir_efectos() throws Exception {
+        givenRide("p1", "driverAssigned", "d1");
+
+        mvc.perform(post("/api/rides/p1/accept")
+                        .header("Authorization", driverToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(DRIVER_LOCATION))
+                .andExpect(status().isNoContent());
+
+        assertThat(rideField("p1", "driver/data/id")).isEqualTo("d1");
+        assertThat(sentPushes()).isEmpty();
+        assertThat(firestore.documentIds("chats")).isEmpty();
+    }
+
     @Test
     void responde_409_si_la_solicitud_ya_fue_cancelada() throws Exception {
         givenRide("p1", "cancelled", null);
