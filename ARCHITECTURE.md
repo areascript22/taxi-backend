@@ -439,6 +439,41 @@ Cuando se implemente el despacho, cada carrera debe guardar una COPIA de los
 anillos con los que arrancó, para que un cambio de configuración a mitad de una
 búsqueda no la altere.
 
+**Edición desde la app (V6, `dispatch/application/DispatchConfigService`).** Un
+administrador ve y edita esa configuración desde driver_app:
+
+```
+GET  /api/admin/dispatch/config                 config + topes + qué puede hacer quien pregunta
+PUT  /api/admin/dispatch/config                 reemplazo completo (anillos + frescura) con expectedVersion
+PUT  /api/admin/dispatch/config/admin-editing   el interruptor "los admins pueden editar" (superuser/fundador)
+GET  /api/admin/dispatch/config/history         cambios, del más nuevo al más viejo (limit, beforeId)
+```
+
+- **Permisos** (`DispatchConfigPermissions`, reglas puras): ver, cualquier admin;
+  editar, el superuser siempre y un admin solo con `dispatch_settings.admins_can_edit`
+  encendido; mover ese interruptor, solo el superuser (o el fundador). El permiso
+  de editar lo decide el caso de uso con la configuración VIGENTE en cada
+  llamada, no un rol: apagar el interruptor surte efecto en el siguiente request.
+  Se pregunta antes de validar el contenido (un admin sin permiso recibe 403, no
+  un 400 que le cuente qué estaba mal).
+- **Validación antes de escribir** (`DispatchConfigRules`): al menos un anillo,
+  hasta `taxiapp.dispatch.max-rings`, rangos de cada campo (los mismos CHECK de
+  V4), radios estrictamente crecientes, búsqueda total ≤
+  `taxiapp.dispatch.max-total-wait` y frescura ≥ `min-location-max-age`. Un plan
+  inválido guardado haría que el despacho se apague sin avisar.
+- **Guardado atómico** (`JpaDispatchConfigStore`): una transacción que bloquea la
+  fila única de `dispatch_settings`, compara `version`, borra y reinserta los
+  anillos (no se actualiza fila por fila: `uq_dispatch_rings_radius` no es
+  diferible y un intercambio de radios chocaría) y deja la entrada del
+  historial. Guardar exactamente lo vigente no sube la versión ni deja rastro.
+- **Versión:** `dispatch_settings.version` sube con cada edición y quien edita
+  manda la que vio (409 si ya cambió). Mover el interruptor NO la sube, para no
+  invalidar una edición en curso.
+- **Historial** (`dispatch_config_changes` y `dispatch_config_change_rings`): la
+  FOTO completa de antes y de después, no un diff (no depende de cómo se
+  numeren los anillos). Si se borra a quien editó, la entrada queda sin autor.
+- El vencimiento de la solicitud sale del plan (`DispatchPlan.requestExpiry`).
+
 **Dónde vive el código de las personas.** Toda la persistencia de personas
 (`UserRow`, `DriverRow`, `VehicleRow`, `PassengerRow` y sus repositorios) está en
 `user/infra`. Las demás features piden lo que necesitan por un puerto de su

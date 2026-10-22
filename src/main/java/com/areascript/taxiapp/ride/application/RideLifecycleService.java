@@ -6,7 +6,6 @@ import com.areascript.taxiapp.common.error.ConflictException;
 import com.areascript.taxiapp.common.error.ExternalServiceException;
 import com.areascript.taxiapp.common.error.ForbiddenException;
 import com.areascript.taxiapp.common.error.NotFoundException;
-import com.areascript.taxiapp.dispatch.domain.DispatchPlan;
 import com.areascript.taxiapp.dispatch.domain.DispatchPlans;
 import com.areascript.taxiapp.dispatch.domain.NoDriversAvailable;
 import com.areascript.taxiapp.dispatch.domain.OfferInbox;
@@ -48,10 +47,6 @@ import java.time.Duration;
 public class RideLifecycleService {
 
     private static final Logger log = LoggerFactory.getLogger(RideLifecycleService.class);
-
-    // Holgura entre que termina el último anillo y que el sistema vence la
-    // solicitud: el cierre "no hay vehículos" del despacho debe ganar siempre.
-    private static final Duration EXPIRY_MARGIN = Duration.ofSeconds(5);
 
     private final RideRepository rides;
     private final DriverRepository drivers;
@@ -144,12 +139,7 @@ public class RideLifecycleService {
             return configured;
         }
         try {
-            DispatchPlan plan = dispatchPlans.current();
-            if (plan.isEmpty()) {
-                return configured;
-            }
-            Duration search = plan.totalWait().plus(EXPIRY_MARGIN);
-            return search.compareTo(configured) > 0 ? search : configured;
+            return dispatchPlans.current().requestExpiry(configured);
         } catch (RuntimeException e) {
             // Sin la configuración no hay forma de calcularlo: el mínimo
             // configurado es un valor seguro (el despacho tampoco va a poder

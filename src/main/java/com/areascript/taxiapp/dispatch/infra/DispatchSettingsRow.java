@@ -29,6 +29,17 @@ public class DispatchSettingsRow {
     @Column(name = "driver_ping_min_move_meters", nullable = false)
     private int driverPingMinMoveMeters;
 
+    // Interruptor que solo mueve el superuser: encendido, los admins también
+    // pueden editar anillos y frescura.
+    @Column(name = "admins_can_edit", nullable = false)
+    private boolean adminsCanEdit;
+
+    // Sube con cada edición de la configuración (ver V6). No es @Version de JPA a
+    // propósito: la comparación la hace el caso de uso con la versión que vio
+    // quien edita, bajo el bloqueo de la fila.
+    @Column(name = "version", nullable = false)
+    private long version;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -49,6 +60,12 @@ public class DispatchSettingsRow {
 
     public int getDriverPingMinMoveMeters() { return driverPingMinMoveMeters; }
     public void setDriverPingMinMoveMeters(int value) { this.driverPingMinMoveMeters = value; }
+
+    public boolean isAdminsCanEdit() { return adminsCanEdit; }
+    public void setAdminsCanEdit(boolean adminsCanEdit) { this.adminsCanEdit = adminsCanEdit; }
+
+    public long getVersion() { return version; }
+    public void setVersion(long version) { this.version = version; }
 
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }

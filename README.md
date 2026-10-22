@@ -56,7 +56,7 @@ flowchart LR
 | Feature | Responsibility | Main endpoints |
 |---|---|---|
 | **`ride`** | Ride lifecycle: request, accept, arrive, start, cancel, complete, expire, query the active ride | `POST /api/rides/request` · `POST /api/rides/{passengerId}/{accept,arrived,start,cancel,complete}` · `GET /api/rides/{passenger,driver}/active` |
-| **`dispatch`** | Driver presence (online, busy, where) and the **ring-based offering** of each request to nearby drivers | `PUT /api/me/driver/availability` · `PUT /api/me/driver/location` |
+| **`dispatch`** | Driver presence (online, busy, where), the **ring-based offering** of each request to nearby drivers, and the admin panel that **configures those rings** (radius, wait, max drivers, location freshness) with a change history | `PUT /api/me/driver/availability` · `PUT /api/me/driver/location` · `GET/PUT /api/admin/dispatch/config` · `PUT /api/admin/dispatch/config/admin-editing` · `GET /api/admin/dispatch/config/history` |
 | **`user`** | Who a person is, their role and their driver/passenger profiles (with vehicle) | `GET /api/me` · `PUT /api/me/driver-profile` · `PUT /api/me/passenger-profile` · `PUT /api/me/device` |
 | **`driveradmin`** | Admin panel: list, approve/reject, block/unblock, change role, delete drivers | `GET /api/drivers` · `PUT /api/drivers/{uid}/{role,approval-status,block-status}` · `DELETE /api/drivers/{uid}` |
 | **`chat`** | Messages between passenger and driver during a ride | `POST /api/rides/{passengerId}/messages` |
@@ -123,6 +123,16 @@ RideAccepted / RideRequestWithdrawn ─▶ every offer is withdrawn, the search 
 ```
 
 *Available* means **online AND not on a ride AND a location fresher than the configured age**, found with a PostGIS `ST_DWithin` query. The offer tray is the evidence: a driver can only accept a ride they were actually offered. Rides are accepted inside a Realtime Database **transaction**, so if two drivers tap at once exactly one wins and the other gets a `409`. A retry from the driver who already owns the ride is treated as success (idempotent), so a slow response never ends in a spurious error.
+
+### Editing the rings without a deploy
+
+The rings live in the database, so an administrator tunes them from the driver app and the change applies to the **next** request (searches already in progress keep the plan they started with).
+
+- **Who:** any admin can *see* the configuration. The **superuser** always edits it. An admin edits only while the superuser has switched **"admins can edit"** on; only the superuser (or the founder) moves that switch. The permission is checked against the *current* configuration on every edit, so turning the switch off takes effect immediately.
+- **Safe to save:** the whole configuration is replaced in one transaction, validated first (an invalid plan would silently turn dispatching off). Every save carries the version the editor saw; if someone saved before, the second editor gets a `409` instead of overwriting.
+- **Limits** (rings, total search time, minimum freshness) come from `taxiapp.dispatch.*` and are returned by the `GET`, so the app validates with the same numbers.
+- **History:** each change keeps who made it, when, and the full configuration *before* and *after*.
+- The request expiry follows the plan: it is `max(minimum, total wait + margin)`, so lengthening the waits never cuts a search short.
 
 ## 🔐 Security
 
