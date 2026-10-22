@@ -105,6 +105,11 @@ class FounderBootstrapServiceTest {
         }
 
         @Override
+        public Optional<UserAccount> findById(java.util.UUID id) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void setRole(String firebaseUid, UserRole role) {
             if (userRoleFailure != null) {
                 throw userRoleFailure;

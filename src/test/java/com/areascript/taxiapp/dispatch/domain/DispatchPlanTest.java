@@ -29,6 +29,32 @@ class DispatchPlanTest {
     }
 
     @Test
+    void el_vencimiento_es_el_minimo_configurado_si_la_busqueda_cabe_en_el() {
+        // 30 s de búsqueda + 5 s de margen = 35 s, que es el mínimo
+        DispatchPlan plan = plan(ring(1, 3000), ring(2, 6000), ring(3, 9000));
+
+        assertThat(plan.requestExpiry(Duration.ofSeconds(35))).isEqualTo(Duration.ofSeconds(35));
+        assertThat(plan.requestExpiry(Duration.ofSeconds(60))).isEqualTo(Duration.ofSeconds(60));
+    }
+
+    @Test
+    void el_vencimiento_crece_con_las_esperas_para_no_cortar_la_busqueda() {
+        DispatchPlan slow = new DispatchPlan(List.of(
+                new DispatchRing(1, 3000, Duration.ofSeconds(20), 10),
+                new DispatchRing(2, 6000, Duration.ofSeconds(20), 10),
+                new DispatchRing(3, 9000, Duration.ofSeconds(20), 10)),
+                Duration.ofSeconds(45));
+
+        // 60 s de búsqueda + 5 s de margen
+        assertThat(slow.requestExpiry(Duration.ofSeconds(35))).isEqualTo(Duration.ofSeconds(65));
+    }
+
+    @Test
+    void sin_anillos_el_vencimiento_es_el_minimo_configurado() {
+        assertThat(DispatchPlan.empty().requestExpiry(Duration.ofSeconds(35))).isEqualTo(Duration.ofSeconds(35));
+    }
+
+    @Test
     void el_plan_vacio_no_despacha() {
         assertThat(DispatchPlan.empty().isEmpty()).isTrue();
         assertThat(DispatchPlan.empty().totalWait()).isEqualTo(Duration.ZERO);

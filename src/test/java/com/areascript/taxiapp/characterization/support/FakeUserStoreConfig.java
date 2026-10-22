@@ -38,6 +38,11 @@ public class FakeUserStoreConfig {
     }
 
     @Bean
+    public FakeDispatchConfigStore fakeDispatchConfigStore() {
+        return new FakeDispatchConfigStore();
+    }
+
+    @Bean
     public DriverRepository documentStoreDriverRepository(
             Firestore firestore, FirebaseProperties firebaseProperties) {
         return new DocumentStoreDriverRepository(firestore, firebaseProperties);

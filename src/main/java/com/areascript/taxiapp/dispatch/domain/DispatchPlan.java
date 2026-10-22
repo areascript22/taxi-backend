@@ -46,4 +46,23 @@ public record DispatchPlan(List<DispatchRing> rings, Duration locationMaxAge) {
     public Duration totalWait() {
         return rings.stream().map(DispatchRing::waitTime).reduce(Duration.ZERO, Duration::plus);
     }
+
+    // Holgura entre que termina el último anillo y que el sistema vence la
+    // solicitud: el cierre "no hay vehículos" del despacho debe ganar siempre.
+    public static final Duration EXPIRY_MARGIN = Duration.ofSeconds(5);
+
+    // Cuánto espera el sistema antes de vencer una solicitud sin conductor.
+    //
+    // No puede ser menor que lo que dura la búsqueda por anillos: si el
+    // administrador alarga las esperas, un vencimiento fijo mataría la solicitud
+    // a mitad de camino y los anillos siguientes nunca se ofrecerían. Es el MAYOR
+    // entre el mínimo configurado y la búsqueda completa más un margen. Con un
+    // plan vacío no hay búsqueda y vale el mínimo.
+    public Duration requestExpiry(Duration configuredMinimum) {
+        if (isEmpty()) {
+            return configuredMinimum;
+        }
+        Duration search = totalWait().plus(EXPIRY_MARGIN);
+        return search.compareTo(configuredMinimum) > 0 ? search : configuredMinimum;
+    }
 }

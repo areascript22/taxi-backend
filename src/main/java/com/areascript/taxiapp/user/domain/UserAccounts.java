@@ -21,6 +21,11 @@ public interface UserAccounts {
     // consultar a un tercero (p. ej. el rol de a quien se va a moderar).
     java.util.Optional<UserAccount> find(String firebaseUid);
 
+    // La persona con esa identidad interna (users.id), o vacío si no existe. Es
+    // para mostrar "quién hizo X" a partir de un id guardado (p. ej. quién
+    // editó la configuración del despacho).
+    java.util.Optional<UserAccount> findById(java.util.UUID id);
+
     // Cambia el rol. Si la persona no existe todavía, la crea.
     void setRole(String firebaseUid, UserRole role);
 
